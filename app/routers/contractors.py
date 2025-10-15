@@ -16,7 +16,7 @@ async def list_contractors(
     offset: int = Query(0, ge=0),
 ):
     query = (
-        supabase.table("public.contractors")
+        supabase.table("contractors")
         .select("*")
         .eq("tenant_id", tenant_id)
         .range(offset, offset + limit - 1)
@@ -36,7 +36,7 @@ async def create_contractor(
     require_admin(user)
     payload = dict(payload or {})
     payload["tenant_id"] = tenant_id
-    res = supabase.table("public.contractors").insert(payload).execute()
+    res = supabase.table("contractors").insert(payload).execute()
     return ensure_response(res)
 
 
@@ -47,7 +47,7 @@ async def get_contractor(
     tenant_id: str = Depends(require_tenant),
 ):
     res = (
-        supabase.table("public.contractors")
+        supabase.table("contractors")
         .select("*")
         .eq("id", contractor_id)
         .eq("tenant_id", tenant_id)
@@ -73,7 +73,7 @@ async def update_contractor(
     if not payload:
         raise HTTPException(400, "No fields to update")
     res = (
-        supabase.table("public.contractors")
+        supabase.table("contractors")
         .update(payload)
         .eq("id", contractor_id)
         .eq("tenant_id", tenant_id)

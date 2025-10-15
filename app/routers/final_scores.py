@@ -14,7 +14,7 @@ async def get_final_score(
     tenant_id: str = Depends(require_tenant),
 ):
     res = (
-        supabase.table("public.final_scores")
+        supabase.table("final_scores")
         .select("*")
         .eq("tenant_id", tenant_id)
         .eq("submission_id", submission_id)

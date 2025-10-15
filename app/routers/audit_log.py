@@ -16,7 +16,7 @@ async def list_audit_log(
     offset: int = Query(0, ge=0),
 ):
     query = (
-        supabase.table("public.audit_log")
+        supabase.table("audit_log")
         .select("*")
         .eq("tenant_id", tenant_id)
         .order("created_at", desc=True)

@@ -16,7 +16,7 @@ async def list_evaluations(
     if not submission_id:
         raise HTTPException(400, "submission_id required")
     res = (
-        supabase.table("public.k2_evaluations")
+        supabase.table("k2_evaluations")
         .select("*")
         .eq("tenant_id", tenant_id)
         .eq("submission_id", submission_id)

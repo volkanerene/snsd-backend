@@ -21,7 +21,7 @@ async def batch_upsert_answers(
         raise HTTPException(400, "submission_id required for each answer")
     for submission_id in submission_ids:
         res = (
-            supabase.table("public.frm32_submissions")
+            supabase.table("frm32_submissions")
             .select("id")
             .eq("id", submission_id)
             .eq("tenant_id", tenant_id)
@@ -36,7 +36,7 @@ async def batch_upsert_answers(
         answer["tenant_id"] = tenant_id
         upsert_payload.append(answer)
     res = (
-        supabase.table("public.frm32_answers")
+        supabase.table("frm32_answers")
         .upsert(upsert_payload, on_conflict="submission_id,question_id")
         .execute()
     )

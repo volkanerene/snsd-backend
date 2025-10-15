@@ -1,33 +1,54 @@
 # app/utils/auth.py
-import httpx, jwt
+import jwt
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from app.config import settings
 
-JWKS_URL = "https://ojkqgvkzumbnmasmajkw.supabase.co/auth/v1/jwks"
-    
-bearer_scheme = HTTPBearer(auto_error=True)  # Swagger'da Authorize butonunu etkinleştirir
-
-_cached_keys = None
-async def get_jwks():
-    global _cached_keys
-    if not _cached_keys:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(JWKS_URL)
-            resp.raise_for_status()
-            _cached_keys = resp.json()
-    return _cached_keys
+bearer_scheme = HTTPBearer(auto_error=True)
 
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)
 ):
-    token = credentials.credentials
-    jwks = await get_jwks()
-    try:
-        unverified = jwt.get_unverified_header(token)
-        key = next(k for k in jwks["keys"] if k["kid"] == unverified["kid"])
-        public_key = jwt.algorithms.RSAAlgorithm.from_jwk(key)
-        payload = jwt.decode(token, public_key, algorithms=["RS256"], options={"verify_aud": False})
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid token")
+    """
+    Validate JWT token from Supabase Auth
 
-    return {"user_id": payload.get("sub"), "role": payload.get("role")}
+    IMPORTANT: You need to add SUPABASE_JWT_SECRET to your .env file
+    Get it from: Supabase Dashboard -> Settings -> API -> JWT Secret
+    """
+    token = credentials.credentials
+
+    # Determine which secret to use
+    # If JWT_SECRET is provided, use it (recommended)
+    # Otherwise fall back to ANON_KEY (may not work for all cases)
+    jwt_secret = settings.SUPABASE_JWT_SECRET or settings.SUPABASE_ANON_KEY
+
+    try:
+        # Decode and verify the JWT token
+        # Supabase uses HS256 algorithm
+        payload = jwt.decode(
+            token,
+            jwt_secret,
+            algorithms=["HS256"],
+            options={
+                "verify_aud": False,  # Supabase doesn't require audience verification
+                "verify_signature": True
+            }
+        )
+
+        return {
+            "user_id": payload.get("sub"),
+            "email": payload.get("email"),
+            "role": payload.get("role")
+        }
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token has expired")
+    except jwt.InvalidSignatureError:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid token signature. Please add SUPABASE_JWT_SECRET to your .env file. "
+                   "Get it from Supabase Dashboard -> Settings -> API -> JWT Secret"
+        )
+    except jwt.InvalidTokenError as e:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")

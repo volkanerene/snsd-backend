@@ -20,7 +20,7 @@ async def create_invite(
         raise HTTPException(400, "email required")
     if not payload.get("invitation_token"):
         raise HTTPException(400, "invitation_token required")
-    res = supabase.table("public.frm35_invites").insert(payload).execute()
+    res = supabase.table("frm35_invites").insert(payload).execute()
     return ensure_response(res)
 
 
@@ -31,7 +31,7 @@ async def get_invite(
     tenant_id: str = Depends(require_tenant),
 ):
     res = (
-        supabase.table("public.frm35_invites")
+        supabase.table("frm35_invites")
         .select("*")
         .eq("id", invite_id)
         .eq("tenant_id", tenant_id)
@@ -55,7 +55,7 @@ async def accept_invite(
     if not token:
         raise HTTPException(400, "invitation_token required")
     lookup = (
-        supabase.table("public.frm35_invites")
+        supabase.table("frm35_invites")
         .select("*")
         .eq("id", invite_id)
         .eq("invitation_token", token)
@@ -67,7 +67,7 @@ async def accept_invite(
         raise HTTPException(404, "Invalid invite token")
     invite = data[0] if isinstance(data, list) else data
     update = (
-        supabase.table("public.frm35_invites")
+        supabase.table("frm35_invites")
         .update({"status": "accepted"})
         .eq("id", invite_id)
         .eq("invitation_token", token)

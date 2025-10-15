@@ -14,7 +14,7 @@ async def list_roles(
     offset: int = Query(0, ge=0),
 ):
     res = (
-        supabase.table("public.roles")
+        supabase.table("roles")
         .select("*")
         .range(offset, offset + limit - 1)
         .execute()

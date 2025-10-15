@@ -1,0 +1,994 @@
+{
+  "tenants": {
+    "columns": [
+      "id",
+      "name",
+      "slug",
+      "logo_url",
+      "subdomain",
+      "license_plan",
+      "modules_enabled",
+      "max_users",
+      "max_contractors",
+      "max_video_requests_monthly",
+      "settings",
+      "contact_email",
+      "contact_phone",
+      "address",
+      "status",
+      "trial_ends_at",
+      "subscription_ends_at",
+      "created_at",
+      "updated_at",
+      "created_by"
+    ],
+    "column_info": {
+      "id": {
+        "type": "str",
+        "sample_value": "550e8400-e29b-41d4-a716-446655440001"
+      },
+      "name": {
+        "type": "str",
+        "sample_value": "SOCAR Turkey"
+      },
+      "slug": {
+        "type": "str",
+        "sample_value": "socar"
+      },
+      "logo_url": {
+        "type": "str",
+        "sample_value": "https://storage.snsdconsultant.com/logos/socar.png"
+      },
+      "subdomain": {
+        "type": "str",
+        "sample_value": "socar.snsdconsultant.com"
+      },
+      "license_plan": {
+        "type": "str",
+        "sample_value": "enterprise"
+      },
+      "modules_enabled": {
+        "type": "list",
+        "sample_value": [
+          "evren_gpt",
+          "marcel_gpt",
+          "safety_bud"
+        ]
+      },
+      "max_users": {
+        "type": "int",
+        "sample_value": 100
+      },
+      "max_contractors": {
+        "type": "int",
+        "sample_value": 200
+      },
+      "max_video_requests_monthly": {
+        "type": "int",
+        "sample_value": 50
+      },
+      "settings": {
+        "type": "dict",
+        "sample_value": {
+          "language": "tr",
+          "theme_color": "#004B87",
+          "enable_sms_notifications": true
+        }
+      },
+      "contact_email": {
+        "type": "str",
+        "sample_value": "hse@socar.com.tr"
+      },
+      "contact_phone": {
+        "type": "str",
+        "sample_value": "+90 212 123 4567"
+      },
+      "address": {
+        "type": "NoneType",
+        "sample_value": "NULL"
+      },
+      "status": {
+        "type": "str",
+        "sample_value": "active"
+      },
+      "trial_ends_at": {
+        "type": "NoneType",
+        "sample_value": "NULL"
+      },
+      "subscription_ends_at": {
+        "type": "str",
+        "sample_value": "2026-12-31T20:59:59+00:00"
+      },
+      "created_at": {
+        "type": "str",
+        "sample_value": "2025-10-10T11:56:29.953233+00:00"
+      },
+      "updated_at": {
+        "type": "str",
+        "sample_value": "2025-10-10T11:56:29.953233+00:00"
+      },
+      "created_by": {
+        "type": "NoneType",
+        "sample_value": "NULL"
+      }
+    },
+    "sample_count": 3,
+    "sample_data": [
+      {
+        "id": "550e8400-e29b-41d4-a716-446655440001",
+        "name": "SOCAR Turkey",
+        "slug": "socar",
+        "logo_url": "https://storage.snsdconsultant.com/logos/socar.png",
+        "subdomain": "socar.snsdconsultant.com",
+        "license_plan": "enterprise",
+        "modules_enabled": [
+          "evren_gpt",
+          "marcel_gpt",
+          "safety_bud"
+        ],
+        "max_users": 100,
+        "max_contractors": 200,
+        "max_video_requests_monthly": 50,
+        "settings": {
+          "language": "tr",
+          "theme_color": "#004B87",
+          "enable_sms_notifications": true
+        },
+        "contact_email": "hse@socar.com.tr",
+        "contact_phone": "+90 212 123 4567",
+        "address": null,
+        "status": "active",
+        "trial_ends_at": null,
+        "subscription_ends_at": "2026-12-31T20:59:59+00:00",
+        "created_at": "2025-10-10T11:56:29.953233+00:00",
+        "updated_at": "2025-10-10T11:56:29.953233+00:00",
+        "created_by": null
+      },
+      {
+        "id": "550e8400-e29b-41d4-a716-446655440002",
+        "name": "R\u00f6nesans Holding",
+        "slug": "ronesans",
+        "logo_url": "https://storage.snsdconsultant.com/logos/ronesans.png",
+        "subdomain": "ronesans.snsdconsultant.com",
+        "license_plan": "professional",
+        "modules_enabled": [
+          "evren_gpt",
+          "marcel_gpt"
+        ],
+        "max_users": 50,
+        "max_contractors": 100,
+        "max_video_requests_monthly": 20,
+        "settings": {
+          "language": "tr",
+          "theme_color": "#C41E3A"
+        },
+        "contact_email": "info@ronesans.com.tr",
+        "contact_phone": "+90 312 987 6543",
+        "address": null,
+        "status": "active",
+        "trial_ends_at": null,
+        "subscription_ends_at": "2026-06-30T20:59:59+00:00",
+        "created_at": "2025-10-10T11:56:29.953233+00:00",
+        "updated_at": "2025-10-10T11:56:29.953233+00:00",
+        "created_by": null
+      }
+    ]
+  },
+  "roles": {
+    "columns": [
+      "id",
+      "name",
+      "slug",
+      "description",
+      "level",
+      "permissions",
+      "created_at",
+      "updated_at"
+    ],
+    "column_info": {
+      "id": {
+        "type": "int",
+        "sample_value": 1
+      },
+      "name": {
+        "type": "str",
+        "sample_value": "SNSD Admin"
+      },
+      "slug": {
+        "type": "str",
+        "sample_value": "snsd_admin"
+      },
+      "description": {
+        "type": "str",
+        "sample_value": "Platform y\u00f6neticisi"
+      },
+      "level": {
+        "type": "int",
+        "sample_value": 0
+      },
+      "permissions": {
+        "type": "list",
+        "sample_value": []
+      },
+      "created_at": {
+        "type": "str",
+        "sample_value": "2025-10-10T11:49:11.12791+00:00"
+      },
+      "updated_at": {
+        "type": "str",
+        "sample_value": "2025-10-10T11:49:11.12791+00:00"
+      }
+    },
+    "sample_count": 5,
+    "sample_data": [
+      {
+        "id": 1,
+        "name": "SNSD Admin",
+        "slug": "snsd_admin",
+        "description": "Platform y\u00f6neticisi",
+        "level": 0,
+        "permissions": [],
+        "created_at": "2025-10-10T11:49:11.12791+00:00",
+        "updated_at": "2025-10-10T11:49:11.12791+00:00"
+      },
+      {
+        "id": 2,
+        "name": "Company Admin",
+        "slug": "company_admin",
+        "description": "M\u00fc\u015fteri y\u00f6neticisi",
+        "level": 1,
+        "permissions": [],
+        "created_at": "2025-10-10T11:49:11.12791+00:00",
+        "updated_at": "2025-10-10T11:49:11.12791+00:00"
+      }
+    ]
+  },
+  "profiles": {
+    "columns": [
+      "id",
+      "tenant_id",
+      "full_name",
+      "username",
+      "avatar_url",
+      "phone",
+      "locale",
+      "timezone",
+      "role_id",
+      "contractor_id",
+      "department",
+      "job_title",
+      "notification_preferences",
+      "is_active",
+      "last_login_at",
+      "created_at",
+      "updated_at"
+    ],
+    "column_info": {
+      "id": {
+        "type": "str",
+        "sample_value": "10000000-0000-0000-0000-000000000004"
+      },
+      "tenant_id": {
+        "type": "str",
+        "sample_value": "550e8400-e29b-41d4-a716-446655440001"
+      },
+      "full_name": {
+        "type": "str",
+        "sample_value": "Can \u00d6zdemir"
+      },
+      "username": {
+        "type": "str",
+        "sample_value": "can.ozdemir"
+      },
+      "avatar_url": {
+        "type": "str",
+        "sample_value": "https://i.pravatar.cc/150?img=33"
+      },
+      "phone": {
+        "type": "str",
+        "sample_value": "+90 532 222 0004"
+      },
+      "locale": {
+        "type": "str",
+        "sample_value": "tr"
+      },
+      "timezone": {
+        "type": "str",
+        "sample_value": "Europe/Istanbul"
+      },
+      "role_id": {
+        "type": "int",
+        "sample_value": 5
+      },
+      "contractor_id": {
+        "type": "NoneType",
+        "sample_value": "NULL"
+      },
+      "department": {
+        "type": "str",
+        "sample_value": "Operations"
+      },
+      "job_title": {
+        "type": "str",
+        "sample_value": "Site Supervisor"
+      },
+      "notification_preferences": {
+        "type": "dict",
+        "sample_value": {
+          "sms": false,
+          "push": true,
+          "email": true
+        }
+      },
+      "is_active": {
+        "type": "bool",
+        "sample_value": true
+      },
+      "last_login_at": {
+        "type": "NoneType",
+        "sample_value": "NULL"
+      },
+      "created_at": {
+        "type": "str",
+        "sample_value": "2025-10-10T12:02:07.095386+00:00"
+      },
+      "updated_at": {
+        "type": "str",
+        "sample_value": "2025-10-10T12:02:07.095386+00:00"
+      }
+    },
+    "sample_count": 5,
+    "sample_data": [
+      {
+        "id": "10000000-0000-0000-0000-000000000004",
+        "tenant_id": "550e8400-e29b-41d4-a716-446655440001",
+        "full_name": "Can \u00d6zdemir",
+        "username": "can.ozdemir",
+        "avatar_url": "https://i.pravatar.cc/150?img=33",
+        "phone": "+90 532 222 0004",
+        "locale": "tr",
+        "timezone": "Europe/Istanbul",
+        "role_id": 5,
+        "contractor_id": null,
+        "department": "Operations",
+        "job_title": "Site Supervisor",
+        "notification_preferences": {
+          "sms": false,
+          "push": true,
+          "email": true
+        },
+        "is_active": true,
+        "last_login_at": null,
+        "created_at": "2025-10-10T12:02:07.095386+00:00",
+        "updated_at": "2025-10-10T12:02:07.095386+00:00"
+      },
+      {
+        "id": "20000000-0000-0000-0000-000000000001",
+        "tenant_id": "550e8400-e29b-41d4-a716-446655440002",
+        "full_name": "Elif Y\u0131ld\u0131z",
+        "username": "elif.yildiz",
+        "avatar_url": "https://i.pravatar.cc/150?img=20",
+        "phone": "+90 532 333 0001",
+        "locale": "tr",
+        "timezone": "Europe/Istanbul",
+        "role_id": 2,
+        "contractor_id": null,
+        "department": "Safety & Quality",
+        "job_title": "Company Admin",
+        "notification_preferences": {
+          "sms": false,
+          "push": true,
+          "email": true
+        },
+        "is_active": true,
+        "last_login_at": null,
+        "created_at": "2025-10-10T12:02:07.095386+00:00",
+        "updated_at": "2025-10-10T12:02:07.095386+00:00"
+      }
+    ]
+  },
+  "contractors": {
+    "columns": [
+      "id",
+      "tenant_id",
+      "name",
+      "legal_name",
+      "tax_number",
+      "trade_registry_number",
+      "contact_person",
+      "contact_email",
+      "contact_phone",
+      "address",
+      "city",
+      "country",
+      "documents",
+      "status",
+      "risk_level",
+      "last_evaluation_score",
+      "last_evaluation_date",
+      "metadata",
+      "created_at",
+      "updated_at",
+      "created_by"
+    ],
+    "column_info": {
+      "id": {
+        "type": "str",
+        "sample_value": "c0000001-0000-0000-0000-000000000001"
+      },
+      "tenant_id": {
+        "type": "str",
+        "sample_value": "550e8400-e29b-41d4-a716-446655440001"
+      },
+      "name": {
+        "type": "str",
+        "sample_value": "G\u00fcvenli \u0130n\u015faat A.\u015e."
+      },
+      "legal_name": {
+        "type": "str",
+        "sample_value": "G\u00fcvenli \u0130n\u015faat Sanayi ve Ticaret A.\u015e."
+      },
+      "tax_number": {
+        "type": "str",
+        "sample_value": "1234567890"
+      },
+      "trade_registry_number": {
+        "type": "NoneType",
+        "sample_value": "NULL"
+      },
+      "contact_person": {
+        "type": "str",
+        "sample_value": "Ali G\u00fcven"
+      },
+      "contact_email": {
+        "type": "str",
+        "sample_value": "ali@guvenlinsaat.com"
+      },
+      "contact_phone": {
+        "type": "str",
+        "sample_value": "+90 532 555 0101"
+      },
+      "address": {
+        "type": "str",
+        "sample_value": "Atat\u00fcrk Mah. Sanayi Cad. No:45"
+      },
+      "city": {
+        "type": "str",
+        "sample_value": "Istanbul"
+      },
+      "country": {
+        "type": "str",
+        "sample_value": "TR"
+      },
+      "documents": {
+        "type": "list",
+        "sample_value": []
+      },
+      "status": {
+        "type": "str",
+        "sample_value": "active"
+      },
+      "risk_level": {
+        "type": "str",
+        "sample_value": "green"
+      },
+      "last_evaluation_score": {
+        "type": "float",
+        "sample_value": 87.5
+      },
+      "last_evaluation_date": {
+        "type": "str",
+        "sample_value": "2025-09-15T11:30:00+00:00"
+      },
+      "metadata": {
+        "type": "dict",
+        "sample_value": {}
+      },
+      "created_at": {
+        "type": "str",
+        "sample_value": "2025-10-10T12:03:27.180728+00:00"
+      },
+      "updated_at": {
+        "type": "str",
+        "sample_value": "2025-10-10T12:03:27.180728+00:00"
+      },
+      "created_by": {
+        "type": "str",
+        "sample_value": "10000000-0000-0000-0000-000000000001"
+      }
+    },
+    "sample_count": 5,
+    "sample_data": [
+      {
+        "id": "c0000001-0000-0000-0000-000000000001",
+        "tenant_id": "550e8400-e29b-41d4-a716-446655440001",
+        "name": "G\u00fcvenli \u0130n\u015faat A.\u015e.",
+        "legal_name": "G\u00fcvenli \u0130n\u015faat Sanayi ve Ticaret A.\u015e.",
+        "tax_number": "1234567890",
+        "trade_registry_number": null,
+        "contact_person": "Ali G\u00fcven",
+        "contact_email": "ali@guvenlinsaat.com",
+        "contact_phone": "+90 532 555 0101",
+        "address": "Atat\u00fcrk Mah. Sanayi Cad. No:45",
+        "city": "Istanbul",
+        "country": "TR",
+        "documents": [],
+        "status": "active",
+        "risk_level": "green",
+        "last_evaluation_score": 87.5,
+        "last_evaluation_date": "2025-09-15T11:30:00+00:00",
+        "metadata": {},
+        "created_at": "2025-10-10T12:03:27.180728+00:00",
+        "updated_at": "2025-10-10T12:03:27.180728+00:00",
+        "created_by": "10000000-0000-0000-0000-000000000001"
+      },
+      {
+        "id": "c0000002-0000-0000-0000-000000000001",
+        "tenant_id": "550e8400-e29b-41d4-a716-446655440001",
+        "name": "H\u0131zl\u0131 Yap\u0131 Ltd.",
+        "legal_name": "H\u0131zl\u0131 Yap\u0131 \u0130n\u015faat Limited \u015eirketi",
+        "tax_number": "9876543210",
+        "trade_registry_number": null,
+        "contact_person": "Fatma H\u0131z\u0131r",
+        "contact_email": "fatma@hizliyapi.com",
+        "contact_phone": "+90 532 555 0201",
+        "address": "Cumhuriyet Bulvar\u0131 123",
+        "city": "Ankara",
+        "country": "TR",
+        "documents": [],
+        "status": "active",
+        "risk_level": "yellow",
+        "last_evaluation_score": 64.3,
+        "last_evaluation_date": "2025-08-22T07:15:00+00:00",
+        "metadata": {},
+        "created_at": "2025-10-10T12:03:27.180728+00:00",
+        "updated_at": "2025-10-10T12:03:27.180728+00:00",
+        "created_by": "10000000-0000-0000-0000-000000000001"
+      }
+    ]
+  },
+  "frm32_questions": {
+    "columns": [
+      "id",
+      "question_code",
+      "question_text_tr",
+      "question_text_en",
+      "k2_category",
+      "k2_weight",
+      "question_type",
+      "options",
+      "scoring_rules",
+      "max_score",
+      "is_required",
+      "is_active",
+      "position",
+      "created_at",
+      "updated_at"
+    ],
+    "column_info": {
+      "id": {
+        "type": "str",
+        "sample_value": "b0000001-0000-0000-0000-000000000001"
+      },
+      "question_code": {
+        "type": "str",
+        "sample_value": "Q1"
+      },
+      "question_text_tr": {
+        "type": "str",
+        "sample_value": "Firman\u0131z\u0131n \u0130SG organizasyon \u015femas\u0131 mevcut mu?"
+      },
+      "question_text_en": {
+        "type": "str",
+        "sample_value": "Does your company have an OHS organization chart?"
+      },
+      "k2_category": {
+        "type": "str",
+        "sample_value": "general_info"
+      },
+      "k2_weight": {
+        "type": "float",
+        "sample_value": 1.0
+      },
+      "question_type": {
+        "type": "str",
+        "sample_value": "yes_no"
+      },
+      "options": {
+        "type": "list",
+        "sample_value": [
+          "Evet",
+          "Hay\u0131r"
+        ]
+      },
+      "scoring_rules": {
+        "type": "dict",
+        "sample_value": {
+          "Evet": 100,
+          "Hay\u0131r": 0
+        }
+      },
+      "max_score": {
+        "type": "float",
+        "sample_value": 100.0
+      },
+      "is_required": {
+        "type": "bool",
+        "sample_value": true
+      },
+      "is_active": {
+        "type": "bool",
+        "sample_value": true
+      },
+      "position": {
+        "type": "int",
+        "sample_value": 1
+      },
+      "created_at": {
+        "type": "str",
+        "sample_value": "2025-10-10T13:40:44.608401+00:00"
+      },
+      "updated_at": {
+        "type": "str",
+        "sample_value": "2025-10-10T13:40:44.608401+00:00"
+      }
+    },
+    "sample_count": 5,
+    "sample_data": [
+      {
+        "id": "b0000001-0000-0000-0000-000000000001",
+        "question_code": "Q1",
+        "question_text_tr": "Firman\u0131z\u0131n \u0130SG organizasyon \u015femas\u0131 mevcut mu?",
+        "question_text_en": "Does your company have an OHS organization chart?",
+        "k2_category": "general_info",
+        "k2_weight": 1.0,
+        "question_type": "yes_no",
+        "options": [
+          "Evet",
+          "Hay\u0131r"
+        ],
+        "scoring_rules": {
+          "Evet": 100,
+          "Hay\u0131r": 0
+        },
+        "max_score": 100.0,
+        "is_required": true,
+        "is_active": true,
+        "position": 1,
+        "created_at": "2025-10-10T13:40:44.608401+00:00",
+        "updated_at": "2025-10-10T13:40:44.608401+00:00"
+      },
+      {
+        "id": "b0000002-0000-0000-0000-000000000001",
+        "question_code": "Q2",
+        "question_text_tr": "\u0130SG biriminde ka\u00e7 ki\u015fi \u00e7al\u0131\u015fmaktad\u0131r?",
+        "question_text_en": "How many people work in the OHS unit?",
+        "k2_category": "general_info",
+        "k2_weight": 1.0,
+        "question_type": "number",
+        "options": null,
+        "scoring_rules": {
+          "0": 0,
+          "1-2": 40,
+          "3-4": 75,
+          ">=5": 100
+        },
+        "max_score": 100.0,
+        "is_required": true,
+        "is_active": true,
+        "position": 2,
+        "created_at": "2025-10-10T13:40:44.608401+00:00",
+        "updated_at": "2025-10-10T13:40:44.608401+00:00"
+      }
+    ]
+  },
+  "frm32_submissions": {
+    "columns": [
+      "id",
+      "tenant_id",
+      "contractor_id",
+      "evaluation_period",
+      "evaluation_type",
+      "status",
+      "progress_percentage",
+      "submitted_at",
+      "completed_at",
+      "final_score",
+      "risk_classification",
+      "ai_summary",
+      "attachments",
+      "notes",
+      "metadata",
+      "created_at",
+      "updated_at",
+      "created_by",
+      "reviewed_by"
+    ],
+    "column_info": {
+      "id": {
+        "type": "str",
+        "sample_value": "d0000001-0000-0000-0000-000000000001"
+      },
+      "tenant_id": {
+        "type": "str",
+        "sample_value": "550e8400-e29b-41d4-a716-446655440001"
+      },
+      "contractor_id": {
+        "type": "str",
+        "sample_value": "c0000001-0000-0000-0000-000000000001"
+      },
+      "evaluation_period": {
+        "type": "str",
+        "sample_value": "2025-Q3"
+      },
+      "evaluation_type": {
+        "type": "str",
+        "sample_value": "periodic"
+      },
+      "status": {
+        "type": "str",
+        "sample_value": "completed"
+      },
+      "progress_percentage": {
+        "type": "int",
+        "sample_value": 100
+      },
+      "submitted_at": {
+        "type": "str",
+        "sample_value": "2025-09-10T07:30:00+00:00"
+      },
+      "completed_at": {
+        "type": "str",
+        "sample_value": "2025-09-15T11:30:00+00:00"
+      },
+      "final_score": {
+        "type": "float",
+        "sample_value": 87.5
+      },
+      "risk_classification": {
+        "type": "str",
+        "sample_value": "green"
+      },
+      "ai_summary": {
+        "type": "str",
+        "sample_value": "G\u00fcvenli \u0130n\u015faat A.\u015e., \u0130SG standartlar\u0131na y\u00fcksek uyum g\u00f6stermektedir. T\u00fcm yasal belgeler eksiksiz, e\u011fitim kay\u0131tlar\u0131 d\u00fczenli tutulmaktad\u0131r. Risk de\u011ferlendirmesi g\u00fcncel ve kapsaml\u0131d\u0131r."
+      },
+      "attachments": {
+        "type": "list",
+        "sample_value": []
+      },
+      "notes": {
+        "type": "NoneType",
+        "sample_value": "NULL"
+      },
+      "metadata": {
+        "type": "dict",
+        "sample_value": {}
+      },
+      "created_at": {
+        "type": "str",
+        "sample_value": "2025-10-10T13:41:22.588373+00:00"
+      },
+      "updated_at": {
+        "type": "str",
+        "sample_value": "2025-10-10T13:41:22.588373+00:00"
+      },
+      "created_by": {
+        "type": "str",
+        "sample_value": "c1000001-0000-0000-0000-000000000001"
+      },
+      "reviewed_by": {
+        "type": "str",
+        "sample_value": "10000000-0000-0000-0000-000000000001"
+      }
+    },
+    "sample_count": 5,
+    "sample_data": [
+      {
+        "id": "d0000001-0000-0000-0000-000000000001",
+        "tenant_id": "550e8400-e29b-41d4-a716-446655440001",
+        "contractor_id": "c0000001-0000-0000-0000-000000000001",
+        "evaluation_period": "2025-Q3",
+        "evaluation_type": "periodic",
+        "status": "completed",
+        "progress_percentage": 100,
+        "submitted_at": "2025-09-10T07:30:00+00:00",
+        "completed_at": "2025-09-15T11:30:00+00:00",
+        "final_score": 87.5,
+        "risk_classification": "green",
+        "ai_summary": "G\u00fcvenli \u0130n\u015faat A.\u015e., \u0130SG standartlar\u0131na y\u00fcksek uyum g\u00f6stermektedir. T\u00fcm yasal belgeler eksiksiz, e\u011fitim kay\u0131tlar\u0131 d\u00fczenli tutulmaktad\u0131r. Risk de\u011ferlendirmesi g\u00fcncel ve kapsaml\u0131d\u0131r.",
+        "attachments": [],
+        "notes": null,
+        "metadata": {},
+        "created_at": "2025-10-10T13:41:22.588373+00:00",
+        "updated_at": "2025-10-10T13:41:22.588373+00:00",
+        "created_by": "c1000001-0000-0000-0000-000000000001",
+        "reviewed_by": "10000000-0000-0000-0000-000000000001"
+      },
+      {
+        "id": "d0000002-0000-0000-0000-000000000001",
+        "tenant_id": "550e8400-e29b-41d4-a716-446655440001",
+        "contractor_id": "c0000002-0000-0000-0000-000000000001",
+        "evaluation_period": "2025-Q3",
+        "evaluation_type": "periodic",
+        "status": "completed",
+        "progress_percentage": 100,
+        "submitted_at": "2025-08-15T11:00:00+00:00",
+        "completed_at": "2025-08-22T07:15:00+00:00",
+        "final_score": 64.3,
+        "risk_classification": "yellow",
+        "ai_summary": "H\u0131zl\u0131 Yap\u0131 Ltd., temel gereksinimleri kar\u015f\u0131lamakla birlikte, e\u011fitim kay\u0131tlar\u0131nda eksiklikler tespit edilmi\u015ftir. KKD kullan\u0131m\u0131 d\u00fczenli kontrol edilmemektedir. \u0130yile\u015ftirme \u00f6nerileri sunulmu\u015ftur.",
+        "attachments": [],
+        "notes": null,
+        "metadata": {},
+        "created_at": "2025-10-10T13:41:22.588373+00:00",
+        "updated_at": "2025-10-10T13:41:22.588373+00:00",
+        "created_by": "c2000001-0000-0000-0000-000000000001",
+        "reviewed_by": "10000000-0000-0000-0000-000000000002"
+      }
+    ]
+  },
+  "frm32_answers": {
+    "columns": [],
+    "note": "Table is empty or inaccessible"
+  },
+  "frm32_scores": {
+    "columns": [],
+    "note": "Table is empty or inaccessible"
+  },
+  "k2_evaluations": {
+    "columns": [],
+    "note": "Table is empty or inaccessible"
+  },
+  "final_scores": {
+    "columns": [],
+    "note": "Table is empty or inaccessible"
+  },
+  "frm35_invites": {
+    "columns": [],
+    "note": "Table is empty or inaccessible"
+  },
+  "payments": {
+    "columns": [
+      "id",
+      "tenant_id",
+      "amount",
+      "currency",
+      "payment_method",
+      "provider",
+      "provider_transaction_id",
+      "provider_response",
+      "status",
+      "subscription_period",
+      "subscription_starts_at",
+      "subscription_ends_at",
+      "invoice_number",
+      "invoice_url",
+      "metadata",
+      "created_at",
+      "updated_at",
+      "created_by"
+    ],
+    "column_info": {
+      "id": {
+        "type": "str",
+        "sample_value": "a0000001-0000-0000-0000-000000000001"
+      },
+      "tenant_id": {
+        "type": "str",
+        "sample_value": "550e8400-e29b-41d4-a716-446655440001"
+      },
+      "amount": {
+        "type": "float",
+        "sample_value": 450000.0
+      },
+      "currency": {
+        "type": "str",
+        "sample_value": "TRY"
+      },
+      "payment_method": {
+        "type": "str",
+        "sample_value": "bank_transfer"
+      },
+      "provider": {
+        "type": "str",
+        "sample_value": "bank"
+      },
+      "provider_transaction_id": {
+        "type": "str",
+        "sample_value": "BNK-2025-001234"
+      },
+      "provider_response": {
+        "type": "NoneType",
+        "sample_value": "NULL"
+      },
+      "status": {
+        "type": "str",
+        "sample_value": "completed"
+      },
+      "subscription_period": {
+        "type": "str",
+        "sample_value": "yearly"
+      },
+      "subscription_starts_at": {
+        "type": "str",
+        "sample_value": "2024-12-31T21:00:00+00:00"
+      },
+      "subscription_ends_at": {
+        "type": "str",
+        "sample_value": "2026-12-31T20:59:59+00:00"
+      },
+      "invoice_number": {
+        "type": "str",
+        "sample_value": "INV-2025-SOCAR-001"
+      },
+      "invoice_url": {
+        "type": "str",
+        "sample_value": "https://storage.snsdconsultant.com/invoices/2025-socar-001.pdf"
+      },
+      "metadata": {
+        "type": "dict",
+        "sample_value": {}
+      },
+      "created_at": {
+        "type": "str",
+        "sample_value": "2025-10-10T13:41:09.633007+00:00"
+      },
+      "updated_at": {
+        "type": "str",
+        "sample_value": "2025-10-10T13:41:09.633007+00:00"
+      },
+      "created_by": {
+        "type": "str",
+        "sample_value": "10000000-0000-0000-0000-000000000001"
+      }
+    },
+    "sample_count": 4,
+    "sample_data": [
+      {
+        "id": "a0000001-0000-0000-0000-000000000001",
+        "tenant_id": "550e8400-e29b-41d4-a716-446655440001",
+        "amount": 450000.0,
+        "currency": "TRY",
+        "payment_method": "bank_transfer",
+        "provider": "bank",
+        "provider_transaction_id": "BNK-2025-001234",
+        "provider_response": null,
+        "status": "completed",
+        "subscription_period": "yearly",
+        "subscription_starts_at": "2024-12-31T21:00:00+00:00",
+        "subscription_ends_at": "2026-12-31T20:59:59+00:00",
+        "invoice_number": "INV-2025-SOCAR-001",
+        "invoice_url": "https://storage.snsdconsultant.com/invoices/2025-socar-001.pdf",
+        "metadata": {},
+        "created_at": "2025-10-10T13:41:09.633007+00:00",
+        "updated_at": "2025-10-10T13:41:09.633007+00:00",
+        "created_by": "10000000-0000-0000-0000-000000000001"
+      },
+      {
+        "id": "a0000002-0000-0000-0000-000000000001",
+        "tenant_id": "550e8400-e29b-41d4-a716-446655440002",
+        "amount": 180000.0,
+        "currency": "TRY",
+        "payment_method": "credit_card",
+        "provider": "paytr",
+        "provider_transaction_id": "PAYTR-2025-567890",
+        "provider_response": null,
+        "status": "completed",
+        "subscription_period": "yearly",
+        "subscription_starts_at": "2025-01-14T21:00:00+00:00",
+        "subscription_ends_at": "2026-06-30T20:59:59+00:00",
+        "invoice_number": "INV-2025-RONESANS-001",
+        "invoice_url": "https://storage.snsdconsultant.com/invoices/2025-ronesans-001.pdf",
+        "metadata": {},
+        "created_at": "2025-10-10T13:41:09.633007+00:00",
+        "updated_at": "2025-10-10T13:41:09.633007+00:00",
+        "created_by": "20000000-0000-0000-0000-000000000001"
+      }
+    ]
+  },
+  "audit_log": {
+    "columns": [],
+    "note": "Table is empty or inaccessible"
+  }
+}

@@ -19,7 +19,7 @@ async def list_submissions(
     offset: int = Query(0, ge=0),
 ):
     query = (
-        supabase.table("public.frm32_submissions")
+        supabase.table("frm32_submissions")
         .select("*")
         .eq("tenant_id", tenant_id)
         .range(offset, offset + limit - 1)
@@ -43,7 +43,7 @@ async def create_submission(
     if not payload.get("contractor_id"):
         raise HTTPException(400, "contractor_id required")
     contractor_res = (
-        supabase.table("public.contractors")
+        supabase.table("contractors")
         .select("id")
         .eq("id", payload["contractor_id"])
         .eq("tenant_id", tenant_id)
@@ -52,7 +52,7 @@ async def create_submission(
     contractor_data = ensure_response(contractor_res)
     if not contractor_data:
         raise HTTPException(404, "Contractor not found")
-    res = supabase.table("public.frm32_submissions").insert(payload).execute()
+    res = supabase.table("frm32_submissions").insert(payload).execute()
     return ensure_response(res)
 
 
@@ -63,7 +63,7 @@ async def get_submission(
     tenant_id: str = Depends(require_tenant),
 ):
     res = (
-        supabase.table("public.frm32_submissions")
+        supabase.table("frm32_submissions")
         .select("*")
         .eq("id", submission_id)
         .eq("tenant_id", tenant_id)
@@ -95,7 +95,7 @@ async def update_submission(
             raise HTTPException(403, "Not allowed")
     update_payload.pop("tenant_id", None)
     res = (
-        supabase.table("public.frm32_submissions")
+        supabase.table("frm32_submissions")
         .update(update_payload)
         .eq("id", submission_id)
         .eq("tenant_id", tenant_id)

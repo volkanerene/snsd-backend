@@ -16,7 +16,7 @@ async def list_payments(
     offset: int = Query(0, ge=0),
 ):
     query = (
-        supabase.table("public.payments")
+        supabase.table("payments")
         .select("*")
         .eq("tenant_id", tenant_id)
         .range(offset, offset + limit - 1)
@@ -38,7 +38,7 @@ async def create_payment(
     payload["tenant_id"] = tenant_id
     if not payload.get("amount"):
         raise HTTPException(400, "amount required")
-    res = supabase.table("public.payments").insert(payload).execute()
+    res = supabase.table("payments").insert(payload).execute()
     return ensure_response(res)
 
 
@@ -49,7 +49,7 @@ async def get_payment(
     tenant_id: str = Depends(require_tenant),
 ):
     res = (
-        supabase.table("public.payments")
+        supabase.table("payments")
         .select("*")
         .eq("id", payment_id)
         .eq("tenant_id", tenant_id)

@@ -16,7 +16,7 @@ async def list_scores(
     if not submission_id:
         raise HTTPException(400, "submission_id required")
     res = (
-        supabase.table("public.frm32_scores")
+        supabase.table("frm32_scores")
         .select("*")
         .eq("tenant_id", tenant_id)
         .eq("submission_id", submission_id)

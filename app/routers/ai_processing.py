@@ -15,7 +15,7 @@ async def list_processing_status(
     resource_id: str | None = Query(None),
 ):
     query = (
-        supabase.table("public.ai_processing_status")
+        supabase.table("ai_processing_status")
         .select("*")
         .eq("tenant_id", tenant_id)
     )
@@ -31,7 +31,7 @@ async def list_processing_status(
     status_ids = [item.get("id") for item in status_list if item.get("id")]
     if status_ids:
         raw_res = (
-            supabase.table("public.ai_raw_outputs")
+            supabase.table("ai_raw_outputs")
             .select("status_id,id,created_at")
             .in_("status_id", status_ids)
             .eq("tenant_id", tenant_id)
