@@ -1,5 +1,6 @@
 .env
 *.env
+.env.example
 
 # Terraform
 terraform/.terraform/
@@ -8,7 +9,11 @@ terraform/terraform.tfstate
 terraform/terraform.tfstate.backup
 terraform/terraform.tfvars
 terraform/*.tfvars
+terraform/tfplan
 !terraform/*.tfvars.example
+
+# AWS Credentials
+*credentials*.csv
 
 # Python
 __pycache__/
