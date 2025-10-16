@@ -10,9 +10,17 @@ from pydantic import BaseModel
 import io
 
 from app.utils.s3_client import get_s3_client, S3Client
-from app.utils.auth import require_auth
+from app.utils.auth import get_current_user
 
 router = APIRouter(prefix="/files", tags=["files"])
+
+
+# Helper function to extract tenant_id from user
+def get_tenant_id(user: dict = Depends(get_current_user)) -> str:
+    """Extract tenant_id from authenticated user"""
+    # For now, use user_id as tenant_id
+    # You can customize this based on your auth structure
+    return user.get("user_id", "default")
 
 
 # Request/Response Models
@@ -62,7 +70,7 @@ class FolderCreateResponse(BaseModel):
 async def upload_file(
     file: UploadFile = File(...),
     folder: Optional[str] = Query(None, description="Folder path to upload to"),
-    tenant_id: str = Depends(require_auth),
+    tenant_id: str = Depends(get_tenant_id),
     s3: S3Client = Depends(get_s3_client)
 ):
     """
@@ -102,7 +110,7 @@ async def upload_file(
 async def upload_multiple_files(
     files: List[UploadFile] = File(...),
     folder: Optional[str] = Query(None, description="Folder path to upload to"),
-    tenant_id: str = Depends(require_auth),
+    tenant_id: str = Depends(get_tenant_id),
     s3: S3Client = Depends(get_s3_client)
 ):
     """Upload multiple files at once"""
@@ -137,7 +145,7 @@ async def upload_multiple_files(
 @router.get("/download/{file_path:path}")
 async def download_file(
     file_path: str,
-    tenant_id: str = Depends(require_auth),
+    tenant_id: str = Depends(get_tenant_id),
     s3: S3Client = Depends(get_s3_client)
 ):
     """
@@ -177,7 +185,7 @@ async def download_file(
 @router.delete("/delete/{file_path:path}")
 async def delete_file(
     file_path: str,
-    tenant_id: str = Depends(require_auth),
+    tenant_id: str = Depends(get_tenant_id),
     s3: S3Client = Depends(get_s3_client)
 ):
     """Delete a file from S3"""
@@ -200,7 +208,7 @@ async def delete_file(
 @router.post("/delete-multiple", response_model=DeleteResponse)
 async def delete_multiple_files(
     file_paths: List[str],
-    tenant_id: str = Depends(require_auth),
+    tenant_id: str = Depends(get_tenant_id),
     s3: S3Client = Depends(get_s3_client)
 ):
     """Delete multiple files at once"""
@@ -218,7 +226,7 @@ async def delete_multiple_files(
 async def list_files(
     folder: Optional[str] = Query(None, description="Folder path to list"),
     max_keys: int = Query(1000, le=1000, description="Maximum number of files to return"),
-    tenant_id: str = Depends(require_auth),
+    tenant_id: str = Depends(get_tenant_id),
     s3: S3Client = Depends(get_s3_client)
 ):
     """List files in a folder"""
@@ -246,7 +254,7 @@ async def list_files(
 @router.get("/metadata/{file_path:path}", response_model=FileMetadata)
 async def get_file_metadata(
     file_path: str,
-    tenant_id: str = Depends(require_auth),
+    tenant_id: str = Depends(get_tenant_id),
     s3: S3Client = Depends(get_s3_client)
 ):
     """Get file metadata"""
@@ -269,7 +277,7 @@ async def get_file_metadata(
 @router.post("/folder/create", response_model=FolderCreateResponse)
 async def create_folder(
     folder_path: str = Query(..., description="Folder path to create"),
-    tenant_id: str = Depends(require_auth),
+    tenant_id: str = Depends(get_tenant_id),
     s3: S3Client = Depends(get_s3_client)
 ):
     """Create a new folder"""
@@ -286,7 +294,7 @@ async def create_folder(
 @router.delete("/folder/delete")
 async def delete_folder(
     folder_path: str = Query(..., description="Folder path to delete"),
-    tenant_id: str = Depends(require_auth),
+    tenant_id: str = Depends(get_tenant_id),
     s3: S3Client = Depends(get_s3_client)
 ):
     """Delete a folder and all its contents"""
@@ -308,7 +316,7 @@ async def delete_folder(
 async def copy_file(
     source_path: str = Query(..., description="Source file path"),
     destination_path: str = Query(..., description="Destination file path"),
-    tenant_id: str = Depends(require_auth),
+    tenant_id: str = Depends(get_tenant_id),
     s3: S3Client = Depends(get_s3_client)
 ):
     """Copy a file to a new location"""
@@ -338,7 +346,7 @@ async def copy_file(
 async def move_file(
     source_path: str = Query(..., description="Source file path"),
     destination_path: str = Query(..., description="Destination file path"),
-    tenant_id: str = Depends(require_auth),
+    tenant_id: str = Depends(get_tenant_id),
     s3: S3Client = Depends(get_s3_client)
 ):
     """Move a file to a new location"""
@@ -368,7 +376,7 @@ async def move_file(
 async def get_presigned_url(
     file_path: str,
     expiration: int = Query(3600, le=604800, description="URL expiration in seconds (max 7 days)"),
-    tenant_id: str = Depends(require_auth),
+    tenant_id: str = Depends(get_tenant_id),
     s3: S3Client = Depends(get_s3_client)
 ):
     """Generate a presigned URL for temporary file access"""
@@ -397,7 +405,7 @@ async def get_presigned_upload_url(
     file_path: str = Query(..., description="Destination file path"),
     expiration: int = Query(3600, le=3600, description="URL expiration in seconds (max 1 hour)"),
     max_file_size: int = Query(10485760, le=104857600, description="Max file size in bytes (max 100MB)"),
-    tenant_id: str = Depends(require_auth),
+    tenant_id: str = Depends(get_tenant_id),
     s3: S3Client = Depends(get_s3_client)
 ):
     """Generate presigned POST data for direct browser upload"""
