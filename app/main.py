@@ -12,11 +12,16 @@ from app.routers import (
     frm32_scores,
     frm32_submissions,
     frm35_invites,
+    invitations,
     k2_evaluations,
     payments,
+    permissions,
     profiles,
     roles,
+    subscription_tiers,
+    tenant_users,
     tenants,
+    users,
     files,
 )
 
@@ -72,9 +77,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Admin & User Management
+app.include_router(users.router, prefix="/users", tags=["Users"])
 app.include_router(tenants.router, prefix="/tenants", tags=["Tenants"])
+app.include_router(tenant_users.router, prefix="/tenant-users", tags=["Tenant Users"])
 app.include_router(roles.router, prefix="/roles", tags=["Roles"])
+app.include_router(permissions.router, prefix="/permissions", tags=["Permissions"])
+app.include_router(invitations.router, prefix="/invitations", tags=["Invitations"])
+app.include_router(subscription_tiers.router, prefix="/tiers", tags=["Subscription Tiers"])
+
+# User Profiles
 app.include_router(profiles.router, prefix="/profiles", tags=["Profiles"])
+
+# Contractors & Evaluations
 app.include_router(contractors.router, prefix="/contractors", tags=["Contractors"])
 app.include_router(frm32_questions.router, prefix="/frm32", tags=["FRM32 Questions"])
 app.include_router(frm32_submissions.router, prefix="/frm32", tags=["FRM32 Submissions"])
@@ -83,7 +98,11 @@ app.include_router(frm32_scores.router, prefix="/frm32", tags=["FRM32 Scores"])
 app.include_router(k2_evaluations.router, prefix="/k2", tags=["K2 Evaluations"])
 app.include_router(final_scores.router, prefix="/final-scores", tags=["Final Scores"])
 app.include_router(frm35_invites.router, prefix="/frm35", tags=["FRM35 Invites"])
+
+# Payments & Billing
 app.include_router(payments.router, prefix="/payments", tags=["Payments"])
+
+# System
 app.include_router(audit_log.router, prefix="/audit-log", tags=["Audit Log"])
 app.include_router(ai_processing.router, prefix="/ai", tags=["AI Processing"])
 app.include_router(files.router)
