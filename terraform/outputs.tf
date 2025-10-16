@@ -40,5 +40,5 @@ output "ecs_service_name" {
 
 output "cloudwatch_log_group" {
   description = "CloudWatch log group name"
-  value       = aws_cloudwatch_log_group.app.name
+  value       = "/ecs/${var.project_name}-${var.environment}"
 }
