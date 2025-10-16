@@ -28,7 +28,17 @@ class HTTPSRedirectMiddleware(BaseHTTPMiddleware):
         forwarded_proto = request.headers.get("x-forwarded-proto")
         if forwarded_proto == "https":
             request.scope["scheme"] = "https"
-        return await call_next(request)
+
+        response = await call_next(request)
+
+        # Fix any HTTP redirects to use HTTPS when behind ALB
+        if forwarded_proto == "https" and response.status_code in (301, 302, 303, 307, 308):
+            location = response.headers.get("location")
+            if location and location.startswith("http://"):
+                # Replace http:// with https://
+                response.headers["location"] = location.replace("http://", "https://", 1)
+
+        return response
 
 
 app = FastAPI(
