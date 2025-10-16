@@ -1,5 +1,6 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.routers import (
     ai_processing,
@@ -19,7 +20,24 @@ from app.routers import (
     files,
 )
 
-app = FastAPI(title="SnSD API")
+
+class HTTPSRedirectMiddleware(BaseHTTPMiddleware):
+    """Middleware to handle HTTPS forwarding from ALB"""
+    async def dispatch(self, request: Request, call_next):
+        # Trust X-Forwarded-Proto header from ALB
+        forwarded_proto = request.headers.get("x-forwarded-proto")
+        if forwarded_proto == "https":
+            request.scope["scheme"] = "https"
+        return await call_next(request)
+
+
+app = FastAPI(
+    title="SnSD API",
+    redirect_slashes=False  # Disable automatic trailing slash redirects
+)
+
+# Add HTTPS redirect middleware first (before CORS)
+app.add_middleware(HTTPSRedirectMiddleware)
 
 # CORS configuration
 app.add_middleware(
