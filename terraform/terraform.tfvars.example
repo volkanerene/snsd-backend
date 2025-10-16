@@ -1,0 +1,29 @@
+# AWS Configuration
+aws_region = "us-east-1"
+environment = "production"
+project_name = "snsd"
+
+# Domain Configuration
+domain_name = "snsdconsultant.com"
+
+# ACM Certificate ARN (create this first in AWS Console)
+# Go to AWS Certificate Manager and request a certificate for *.snsdconsultant.com
+certificate_arn = "arn:aws:acm:us-east-1:YOUR_ACCOUNT_ID:certificate/YOUR_CERTIFICATE_ID"
+
+# VPC Configuration
+vpc_cidr = "10.0.0.0/16"
+
+# S3 Configuration
+s3_bucket_name = "snsd-file-uploads"
+
+# ECS Configuration
+container_port = 8000
+ecs_desired_count = 1
+ecs_task_cpu = "256"      # 0.25 vCPU (minimum for Fargate)
+ecs_task_memory = "512"    # 512 MB (minimum for Fargate)
+
+# Supabase Secrets (NEVER commit these values!)
+supabase_url = "https://ojkqgvkzumbnmasmajkw.supabase.co"
+supabase_anon_key = "your-supabase-anon-key"
+supabase_service_role_key = "your-supabase-service-role-key"
+supabase_jwt_secret = "your-supabase-jwt-secret"

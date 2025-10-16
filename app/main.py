@@ -16,6 +16,7 @@ from app.routers import (
     profiles,
     roles,
     tenants,
+    files,
 )
 
 app = FastAPI(title="SnSD API")
@@ -52,6 +53,7 @@ app.include_router(frm35_invites.router, prefix="/frm35", tags=["FRM35 Invites"]
 app.include_router(payments.router, prefix="/payments", tags=["Payments"])
 app.include_router(audit_log.router, prefix="/audit-log", tags=["Audit Log"])
 app.include_router(ai_processing.router, prefix="/ai", tags=["AI Processing"])
+app.include_router(files.router)
 
 @app.get("/")
 def root():

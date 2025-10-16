@@ -6,6 +6,6 @@ pyjwt[crypto]
 
 pydantic>=2.0
 pydantic-settings>=2.2
-python-dotenv  # opsiyonel; pydantic-settings dotenv'i zaten destekliyor
-# Eğer direkt Postgres'e bağlanacaksan:
-# psycopg[binary]  veya  asyncpg
+python-dotenv
+boto3
+python-multipart
