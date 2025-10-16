@@ -43,7 +43,8 @@ class HTTPSRedirectMiddleware(BaseHTTPMiddleware):
 
 app = FastAPI(
     title="SnSD API",
-    redirect_slashes=False  # Disable automatic trailing slash redirects
+    # Keep redirect_slashes=True (default) for automatic trailing slash handling
+    # The HTTPSRedirectMiddleware ensures all redirects use HTTPS
 )
 
 # Add HTTPS redirect middleware first (before CORS)
