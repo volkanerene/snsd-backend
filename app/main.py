@@ -25,6 +25,7 @@ app = FastAPI(title="SnSD API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
+        # Local development
         "http://localhost:3000",
         "http://localhost:5173",
         "http://localhost:5174",
@@ -33,6 +34,9 @@ app.add_middleware(
         "http://127.0.0.1:5173",
         "http://127.0.0.1:5174",
         "http://127.0.0.1:8080",
+        # Production
+        "https://www.snsdconsultant.com",
+        "https://snsdconsultant.com",
     ],
     allow_credentials=True,
     allow_methods=["*"],
