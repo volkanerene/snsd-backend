@@ -10,11 +10,15 @@ async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)
 ):
     """
-    Validate JWT token from Supabase Auth
+    Validate JWT token from Supabase Auth and fetch user profile
 
     IMPORTANT: You need to add SUPABASE_JWT_SECRET to your .env file
     Get it from: Supabase Dashboard -> Settings -> API -> JWT Secret
+
+    Returns user profile with role_id, tenant_id, and other profile data
     """
+    from app.db.supabase_client import supabase
+
     token = credentials.credentials
 
     # Determine which secret to use
@@ -35,11 +39,28 @@ async def get_current_user(
             }
         )
 
-        return {
-            "user_id": payload.get("sub"),
-            "email": payload.get("email"),
-            "role": payload.get("role")
-        }
+        user_id = payload.get("sub")
+
+        # Fetch user profile from database to get role_id, tenant_id, etc.
+        profile_res = supabase.table("profiles").select("*").eq("id", user_id).limit(1).execute()
+
+        if not profile_res.data:
+            # User authenticated but no profile - return basic info
+            return {
+                "id": user_id,
+                "user_id": user_id,  # Backward compatibility
+                "email": payload.get("email"),
+                "role": payload.get("role"),
+                "role_id": None,
+                "tenant_id": None,
+            }
+
+        # Return profile data with both 'id' and 'user_id' for compatibility
+        profile = profile_res.data[0]
+        profile["user_id"] = user_id  # Add for backward compatibility
+
+        return profile
+
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token has expired")
     except jwt.InvalidSignatureError:

@@ -10,27 +10,37 @@ def require_tenant(x_tenant_id: str | None = Header(None, alias="x-tenant-id")):
 
 def require_admin(user: dict):
     """
-    Check if user is admin by querying profiles table.
-    Admin = role_id <= 1 (SNSD Admin or Company Admin)
+    Check if user is admin.
+    Admin = role_id <= 2 (SNSD Admin or Company Admin)
+
+    Note: get_current_user now returns the full profile, so we can check role_id directly
     """
-    user_id = user.get("user_id")
-    if not user_id:
-        raise HTTPException(403, "Not allowed")
+    role_id = user.get("role_id")
 
-    # Query profiles table to get user's role_id
-    try:
-        res = supabase.table("profiles").select("role_id").eq("id", user_id).limit(1).execute()
-        if not res.data or len(res.data) == 0:
-            raise HTTPException(403, "Profile not found")
+    # Only role_id <= 2 (SNSD Admin and Company Admin) are allowed
+    if role_id is None or role_id > 2:
+        raise HTTPException(403, "Admin access required")
 
-        profile = res.data[0]
-        role_id = profile.get("role_id")
 
-        # Only role_id <= 1 (SNSD Admin and Company Admin) are allowed
-        if role_id is None or role_id > 1:
-            raise HTTPException(403, "Not allowed")
-    except Exception as e:
-        raise HTTPException(403, f"Authorization check failed: {str(e)}")
+def require_super_admin(user: dict):
+    """
+    Check if user is super admin (role_id = 1)
+    """
+    role_id = user.get("role_id")
+
+    if role_id != 1:
+        raise HTTPException(403, "Super admin access required")
+
+
+def check_permission(user: dict, required_role_id: int):
+    """
+    Check if user has at least the required role level
+    Lower role_id = higher permission level (1 = Super Admin is highest)
+    """
+    user_role_id = user.get("role_id")
+
+    if user_role_id is None or user_role_id > required_role_id:
+        raise HTTPException(403, f"Insufficient permissions (required role_id <= {required_role_id})")
 
 
 def ensure_response(res):
