@@ -1,6 +1,5 @@
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from typing import Optional, List
-import requests
 
 from app.db.supabase_client import supabase
 from app.routers.deps import ensure_response, require_admin
