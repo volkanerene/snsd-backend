@@ -56,29 +56,32 @@ async def get_my_permissions(
     user=Depends(get_current_user),
 ):
     """Get current user's permissions based on their role"""
+    from app.utils.auth import get_user_permissions
+
+    user_id = user.get("id") or user.get("user_id")
     role_id = user.get("role_id")
 
-    if not role_id:
-        return []
+    if not user_id or not role_id:
+        return {
+            "user_id": user_id,
+            "role_id": role_id,
+            "role_name": "Unknown",
+            "permissions": []
+        }
 
-    res = (
-        supabase.table("role_permissions")
-        .select(
-            """
-            *,
-            permission:permission_id(id, name, description, category)
-            """
-        )
-        .eq("role_id", role_id)
-        .execute()
-    )
+    # Get role name
+    role_res = supabase.table("roles").select("name").eq("id", role_id).limit(1).execute()
+    role_name = role_res.data[0]["name"] if role_res.data else "Unknown"
 
-    data = ensure_response(res)
+    # Get user's permissions
+    permissions = get_user_permissions(user)
 
-    # Extract just the permission objects
-    permissions = [item["permission"] for item in data if item.get("permission")]
-
-    return permissions
+    return {
+        "user_id": user_id,
+        "role_id": role_id,
+        "role_name": role_name,
+        "permissions": permissions
+    }
 
 
 @router.get("/{permission_id}")

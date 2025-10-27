@@ -75,3 +75,115 @@ async def get_current_user(
         raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
+
+
+def require_admin(user: dict):
+    """
+    Check if user is an admin (role_id <= 2)
+    Raises HTTPException if not authorized
+    """
+    role_id = user.get("role_id")
+    if role_id is None or role_id > 2:
+        raise HTTPException(
+            status_code=403,
+            detail="Admin access required"
+        )
+
+
+def require_permission(user: dict, permission: str):
+    """
+    Check if user has a specific permission
+    Raises HTTPException if not authorized
+
+    Args:
+        user: User dict from get_current_user
+        permission: Permission name (e.g. 'users.read')
+    """
+    from app.db.supabase_client import supabase
+
+    user_id = user.get("id") or user.get("user_id")
+    role_id = user.get("role_id")
+
+    if not user_id or not role_id:
+        raise HTTPException(
+            status_code=403,
+            detail="User profile not properly configured"
+        )
+
+    # Super Admin (role_id = 1) has all permissions
+    if role_id == 1:
+        return True
+
+    # Check if user's role has the permission
+    query = supabase.table("user_permissions_view").select("permission_name").eq("user_id", user_id).eq("permission_name", permission).limit(1).execute()
+
+    if not query.data:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Permission denied: '{permission}' required"
+        )
+
+    return True
+
+
+def require_any_permission(user: dict, permissions: list[str]):
+    """
+    Check if user has any of the specified permissions
+    Raises HTTPException if none are found
+
+    Args:
+        user: User dict from get_current_user
+        permissions: List of permission names
+    """
+    from app.db.supabase_client import supabase
+
+    user_id = user.get("id") or user.get("user_id")
+    role_id = user.get("role_id")
+
+    if not user_id or not role_id:
+        raise HTTPException(
+            status_code=403,
+            detail="User profile not properly configured"
+        )
+
+    # Super Admin (role_id = 1) has all permissions
+    if role_id == 1:
+        return True
+
+    # Check if user has any of the permissions
+    query = supabase.table("user_permissions_view").select("permission_name").eq("user_id", user_id).in_("permission_name", permissions).limit(1).execute()
+
+    if not query.data:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Permission denied: one of {permissions} required"
+        )
+
+    return True
+
+
+def get_user_permissions(user: dict) -> list[str]:
+    """
+    Get all permissions for a user
+
+    Args:
+        user: User dict from get_current_user
+
+    Returns:
+        List of permission names
+    """
+    from app.db.supabase_client import supabase
+
+    user_id = user.get("id") or user.get("user_id")
+    role_id = user.get("role_id")
+
+    if not user_id or not role_id:
+        return []
+
+    # Query user_permissions_view
+    query = supabase.table("user_permissions_view").select("permission_name").eq("user_id", user_id).execute()
+
+    if not query.data:
+        return []
+
+    return [p["permission_name"] for p in query.data]
