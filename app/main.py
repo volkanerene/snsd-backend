@@ -6,6 +6,7 @@ from app.routers import (
     ai_processing,
     audit_log,
     contractors,
+    evren_gpt,
     final_scores,
     frm32_answers,
     frm32_questions,
@@ -91,6 +92,7 @@ app.include_router(profiles.router, prefix="/profiles", tags=["Profiles"])
 
 # Contractors & Evaluations
 app.include_router(contractors.router, prefix="/contractors", tags=["Contractors"])
+app.include_router(evren_gpt.router, prefix="/api", tags=["EvrenGPT"])  # EvrenGPT Process
 app.include_router(frm32_questions.router, prefix="/frm32", tags=["FRM32 Questions"])
 app.include_router(frm32_submissions.router, prefix="/frm32", tags=["FRM32 Submissions"])
 app.include_router(frm32_answers.router, prefix="/frm32", tags=["FRM32 Answers"])

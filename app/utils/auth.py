@@ -24,7 +24,9 @@ async def get_current_user(
     # Determine which secret to use
     # If JWT_SECRET is provided, use it (recommended)
     # Otherwise fall back to ANON_KEY (may not work for all cases)
-    jwt_secret = settings.SUPABASE_JWT_SECRET or settings.SUPABASE_ANON_KEY
+    jwt_secret = settings.SUPABASE_JWT_SECRET
+    if not jwt_secret:
+        raise HTTPException(status_code=500, detail="SUPABASE_JWT_SECRET not set on server")
 
     try:
         # Decode and verify the JWT token
