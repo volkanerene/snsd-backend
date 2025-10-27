@@ -183,7 +183,6 @@ CREATE OR REPLACE VIEW user_permissions_view AS
 SELECT
   p.id AS user_id,
   p.full_name,
-  p.email,
   r.id AS role_id,
   r.name AS role_name,
   perm.id AS permission_id,
