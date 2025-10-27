@@ -46,22 +46,44 @@ async def create_role(
     payload: dict = Body(...),
     user=Depends(get_current_user),
 ):
-    """Create a new role (admin only)"""
+    """Create a new role with permissions (admin only)"""
     require_admin(user)
 
     name = payload.get("name")
+    slug = payload.get("slug")
     description = payload.get("description")
+    level = payload.get("level", 3)
+    permission_ids = payload.get("permissions", [])
 
     if not name:
         raise HTTPException(400, "name is required")
+    if not slug:
+        raise HTTPException(400, "slug is required")
 
     role_data = {
         "name": name,
+        "slug": slug,
         "description": description,
+        "level": level,
     }
 
+    # Create role
     res = supabase.table("roles").insert(role_data).execute()
-    return ensure_response(res)
+    role = ensure_response(res)
+
+    if not role:
+        raise HTTPException(500, "Failed to create role")
+
+    role_id = role[0]["id"] if isinstance(role, list) else role["id"]
+
+    # Add permissions if provided
+    if permission_ids:
+        new_permissions = [
+            {"role_id": role_id, "permission_id": pid} for pid in permission_ids
+        ]
+        supabase.table("role_permissions").insert(new_permissions).execute()
+
+    return role[0] if isinstance(role, list) else role
 
 
 @router.get("/{role_id}")
