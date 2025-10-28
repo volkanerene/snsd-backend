@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS brand_presets (
   tts_speed DECIMAL(3,2) DEFAULT 1.0,
 
   -- Background settings
-  bg_asset_id INTEGER REFERENCES assets(id) ON DELETE SET NULL,
+  bg_asset_id INTEGER,
   bg_type VARCHAR(50) DEFAULT 'color', -- color, image, video
   bg_value TEXT, -- color code or asset URL
 
@@ -98,6 +98,13 @@ CREATE INDEX idx_marcel_assets_type ON marcel_assets(type);
 CREATE INDEX idx_marcel_assets_heygen ON marcel_assets(heygen_asset_id);
 
 COMMENT ON TABLE marcel_assets IS 'User uploaded assets for video generation';
+
+-- Add foreign key constraint from brand_presets to marcel_assets
+ALTER TABLE brand_presets
+  ADD CONSTRAINT fk_brand_presets_bg_asset
+  FOREIGN KEY (bg_asset_id)
+  REFERENCES marcel_assets(id)
+  ON DELETE SET NULL;
 
 -- =====================================================================
 -- 4. Video Jobs - Track video generation requests
