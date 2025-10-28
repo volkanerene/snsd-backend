@@ -20,7 +20,7 @@ COMMENT ON COLUMN tenants.heygen_webhook_secret IS 'Webhook secret for HeyGen ca
 
 CREATE TABLE IF NOT EXISTS brand_presets (
   id SERIAL PRIMARY KEY,
-  tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   user_id UUID NOT NULL,
   name VARCHAR(255) NOT NULL,
   description TEXT,
@@ -70,7 +70,7 @@ COMMENT ON TABLE brand_presets IS 'Saved video generation presets per tenant';
 
 CREATE TABLE IF NOT EXISTS marcel_assets (
   id SERIAL PRIMARY KEY,
-  tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   user_id UUID NOT NULL,
 
   -- Asset info
@@ -105,7 +105,7 @@ COMMENT ON TABLE marcel_assets IS 'User uploaded assets for video generation';
 
 CREATE TABLE IF NOT EXISTS video_jobs (
   id SERIAL PRIMARY KEY,
-  tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   user_id UUID NOT NULL,
   preset_id INTEGER REFERENCES brand_presets(id) ON DELETE SET NULL,
 
@@ -230,7 +230,7 @@ COMMENT ON TABLE catalog_voices IS 'Cached HeyGen voice catalog (24h TTL)';
 
 CREATE TABLE IF NOT EXISTS marcel_consents (
   id SERIAL PRIMARY KEY,
-  tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   user_id UUID NOT NULL,
 
   -- Consent details
