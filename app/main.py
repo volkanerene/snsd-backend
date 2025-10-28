@@ -24,6 +24,8 @@ from app.routers import (
     tenants,
     users,
     files,
+    marcel_gpt,
+    marcel_webhook,
 )
 
 
@@ -103,6 +105,10 @@ app.include_router(frm35_invites.router, prefix="/frm35", tags=["FRM35 Invites"]
 
 # Payments & Billing
 app.include_router(payments.router, prefix="/payments", tags=["Payments"])
+
+# MarcelGPT - Video Generation
+app.include_router(marcel_gpt.router, prefix="/marcel-gpt", tags=["MarcelGPT"])
+app.include_router(marcel_webhook.router, prefix="/marcel-gpt", tags=["MarcelGPT Webhook"])
 
 # System
 app.include_router(audit_log.router, prefix="/audit-log", tags=["Audit Log"])
