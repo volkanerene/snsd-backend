@@ -79,10 +79,10 @@ class HeyGenService:
         # Check cache first
         if not force_refresh:
             cache_threshold = datetime.now() - timedelta(hours=self.CACHE_TTL_HOURS)
-            cached = supabase.table("catalog_avatars") \\
-                .select("*") \\
-                .gte("cached_at", cache_threshold.isoformat()) \\
-                .execute()
+            cached = (supabase.table("catalog_avatars")
+                .select("*")
+                .gte("cached_at", cache_threshold.isoformat())
+                .execute())
 
             if cached.data:
                 return [item["data"] for item in cached.data]
@@ -105,9 +105,9 @@ class HeyGenService:
                 "cached_at": datetime.now().isoformat()
             }
 
-            supabase.table("catalog_avatars") \\
-                .upsert(avatar_data, on_conflict="avatar_id") \\
-                .execute()
+            (supabase.table("catalog_avatars")
+                .upsert(avatar_data, on_conflict="avatar_id")
+                .execute())
 
         return avatars
 
@@ -124,10 +124,10 @@ class HeyGenService:
         # Check cache first
         if not force_refresh:
             cache_threshold = datetime.now() - timedelta(hours=self.CACHE_TTL_HOURS)
-            cached = supabase.table("catalog_voices") \\
-                .select("*") \\
-                .gte("cached_at", cache_threshold.isoformat()) \\
-                .execute()
+            cached = (supabase.table("catalog_voices")
+                .select("*")
+                .gte("cached_at", cache_threshold.isoformat())
+                .execute())
 
             if cached.data:
                 return [item["data"] for item in cached.data]
@@ -150,9 +150,9 @@ class HeyGenService:
                 "cached_at": datetime.now().isoformat()
             }
 
-            supabase.table("catalog_voices") \\
-                .upsert(voice_data, on_conflict="voice_id") \\
-                .execute()
+            (supabase.table("catalog_voices")
+                .upsert(voice_data, on_conflict="voice_id")
+                .execute())
 
         return voices
 
@@ -346,11 +346,11 @@ def get_heygen_service(tenant_id: int) -> Optional[HeyGenService]:
         HeyGenService instance or None if no API key
     """
     # Get tenant's API key
-    result = supabase.table("tenants") \\
-        .select("heygen_api_key") \\
-        .eq("id", tenant_id) \\
-        .limit(1) \\
-        .execute()
+    result = (supabase.table("tenants")
+        .select("heygen_api_key")
+        .eq("id", tenant_id)
+        .limit(1)
+        .execute())
 
     if not result.data or not result.data[0].get("heygen_api_key"):
         return None
