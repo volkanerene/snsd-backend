@@ -51,6 +51,7 @@ class HTTPSRedirectMiddleware(BaseHTTPMiddleware):
 
 app = FastAPI(
     title="SnSD API",
+    version="1.1.0",  # Added MarcelGPT video generation
     # Keep redirect_slashes=True (default) for automatic trailing slash handling
     # The HTTPSRedirectMiddleware ensures all redirects use HTTPS
 )
