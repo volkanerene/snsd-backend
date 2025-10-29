@@ -59,7 +59,15 @@ class HeyGenService:
                 json=data,
                 params=params
             )
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                detail = exc.response.text
+                raise httpx.HTTPStatusError(
+                    f"{exc} - Response: {detail}",
+                    request=exc.request,
+                    response=exc.response
+                ) from exc
             return response.json()
 
     # =========================================================================
@@ -76,6 +84,9 @@ class HeyGenService:
         Returns:
             List of avatar objects
         """
+        import sys
+        print(f"[HeyGen] list_avatars called, force_refresh={force_refresh}", file=sys.stderr, flush=True)
+
         # Check cache first
         if not force_refresh:
             cache_threshold = datetime.now() - timedelta(hours=self.CACHE_TTL_HOURS)
@@ -84,12 +95,21 @@ class HeyGenService:
                 .gte("cached_at", cache_threshold.isoformat())
                 .execute())
 
+            print(f"[HeyGen] Cache check: found {len(cached.data) if cached.data else 0} cached avatars", file=sys.stderr, flush=True)
             if cached.data:
                 return [item["data"] for item in cached.data]
 
         # Fetch from API
-        response = await self._make_request("GET", "/v2/avatars")
-        avatars = response.get("avatars", [])
+        print(f"[HeyGen] Fetching from HeyGen API: GET /v2/avatars", file=sys.stderr, flush=True)
+        try:
+            response = await self._make_request("GET", "/v2/avatars")
+            print(f"[HeyGen] API Response keys: {list(response.keys())}", file=sys.stderr, flush=True)
+            # HeyGen API returns: {'error': None, 'data': {'avatars': [...]}}
+            avatars = response.get("data", {}).get("avatars", [])
+            print(f"[HeyGen] Extracted {len(avatars)} avatars from response", file=sys.stderr, flush=True)
+        except Exception as e:
+            print(f"[HeyGen] ERROR calling API: {type(e).__name__}: {str(e)}", file=sys.stderr, flush=True)
+            return []
 
         # Update cache
         for avatar in avatars:
@@ -134,7 +154,8 @@ class HeyGenService:
 
         # Fetch from API
         response = await self._make_request("GET", "/v2/voices")
-        voices = response.get("voices", [])
+        # HeyGen API returns: {'error': None, 'data': {'voices': [...]}}
+        voices = response.get("data", {}).get("voices", [])
 
         # Update cache
         for voice in voices:
@@ -193,7 +214,7 @@ class HeyGenService:
         if len(input_text) > 1500:
             raise ValueError("Input text must be less than 1500 characters")
 
-        payload = {
+        payload: Dict[str, Any] = {
             "video_inputs": [{
                 "character": {
                     "type": "avatar",
@@ -212,15 +233,18 @@ class HeyGenService:
                 "height": kwargs.get("height", 1080)
             },
             "test": kwargs.get("test", False),
-            "title": kwargs.get("title")
         }
+
+        title = kwargs.get("title")
+        if title:
+            payload["title"] = title
 
         # Add callback if provided
         if callback_url:
             payload["callback_id"] = callback_url
 
         # Add background if provided
-        if "background" in kwargs:
+        if kwargs.get("background") is not None:
             payload["video_inputs"][0]["background"] = kwargs["background"]
 
         response = await self._make_request("POST", "/v2/video/generate", data=payload)
@@ -332,6 +356,62 @@ class HeyGenService:
 
         response = await self._make_request("POST", "/v1/asset.upload", data=payload)
         return response
+
+    # =========================================================================
+    # Photo Avatar (Looks) Methods
+    # =========================================================================
+
+    async def create_photo_avatar_group(self, name: str, **kwargs) -> Dict:
+        payload = {"name": name, **kwargs}
+        return await self._make_request(
+            "POST", "/v2/photo_avatar/avatar_group/create", data=payload
+        )
+
+    async def add_to_photo_avatar_group(
+        self,
+        avatar_group_id: str,
+        look_ids: Optional[List[str]] = None,
+        photo_ids: Optional[List[str]] = None
+    ) -> Dict:
+        payload: Dict[str, Any] = {"avatar_group_id": avatar_group_id}
+        if look_ids:
+            payload["look_ids"] = look_ids
+        if photo_ids:
+            payload["photo_ids"] = photo_ids
+        return await self._make_request(
+            "POST", "/v2/photo_avatar/avatar_group/add", data=payload
+        )
+
+    async def generate_photo_avatar_photo(self, **payload) -> Dict:
+        return await self._make_request(
+            "POST", "/v2/photo_avatar/photo/generate", data=payload
+        )
+
+    async def train_photo_avatar_group(self, avatar_group_id: str) -> Dict:
+        payload = {"avatar_group_id": avatar_group_id}
+        return await self._make_request(
+            "POST", "/v2/photo_avatar/train", data=payload
+        )
+
+    async def get_photo_avatar_training(self, job_id: str) -> Dict:
+        return await self._make_request(
+            "GET", f"/v2/photo_avatar/training/{job_id}"
+        )
+
+    async def generate_photo_avatar_look(self, payload: Dict[str, Any]) -> Dict:
+        return await self._make_request(
+            "POST", "/v2/photo_avatar/look/generate", data=payload
+        )
+
+    async def get_photo_avatar_generation(self, generation_id: str) -> Dict:
+        return await self._make_request(
+            "GET", f"/v2/photo_avatar/generation/{generation_id}"
+        )
+
+    async def get_photo_avatar(self, look_id: str) -> Dict:
+        return await self._make_request(
+            "GET", f"/v2/photo_avatar/{look_id}"
+        )
 
 
 # Singleton helper to get service instance

@@ -5,6 +5,7 @@ class Settings(BaseSettings):
     SUPABASE_ANON_KEY: str
     SUPABASE_SERVICE_ROLE_KEY: str
     SUPABASE_JWT_SECRET: str | None = None  # JWT Secret for token verification
+    OPENAI_API_KEY: str | None = None
     API_URL: str = "https://api.snsdconsultant.com"  # Public API URL for webhooks
     PORT: int | None = 8000
 

@@ -1,16 +1,74 @@
 """
 MarcelGPT - HeyGen Video Generation API Routes
 """
-from fastapi import APIRouter, Depends, HTTPException, Body, Query
-from typing import Optional, List
 from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, UploadFile, File
+from pydantic import BaseModel, Field
 
 from app.db.supabase_client import supabase
 from app.routers.deps import ensure_response
 from app.utils.auth import get_current_user, require_permission
 from app.services.heygen_service import get_heygen_service
+from app.services.photo_avatar_service import PhotoAvatarService
 
 router = APIRouter()
+
+
+class AdvancedVideoConfigModel(BaseModel):
+    backgroundType: str = Field(..., alias="backgroundType")
+    backgroundColor: Optional[str] = Field(None, alias="backgroundColor")
+    backgroundImageUrl: Optional[str] = Field(None, alias="backgroundImageUrl")
+    language: str = Field("en", alias="language")
+    speed: float = Field(1.0, alias="speed")
+    tone: Optional[str] = Field(None, alias="tone")
+    enableSubtitles: bool = Field(False, alias="enableSubtitles")
+    subtitleLanguage: Optional[str] = Field(None, alias="subtitleLanguage")
+    width: int = Field(1280, alias="width")
+    height: int = Field(720, alias="height")
+    aspectRatio: str = Field("16:9", alias="aspectRatio")
+    avatarStyle: str = Field("normal", alias="avatarStyle")
+
+    class Config:
+        allow_population_by_field_name = True
+
+
+class CreateLookRequest(BaseModel):
+    name: str
+    prompt: Optional[str] = None
+    notes: Optional[str] = None
+    voice_id: str = Field(..., alias="voiceId")
+    config: AdvancedVideoConfigModel
+    look_options: Optional[Dict[str, Any]] = Field(None, alias="lookOptions")
+    base_avatar_id: Optional[str] = Field(None, alias="baseAvatarId")
+    base_avatar_preview_url: Optional[str] = Field(None, alias="baseAvatarPreviewUrl")
+
+    class Config:
+        allow_population_by_field_name = True
+
+
+def serialize_photo_avatar_look(record: Dict[str, Any]) -> Dict[str, Any]:
+    config = record.get("config") or {}
+    meta = record.get("meta") or {}
+    return {
+        "id": record.get("id"),
+        "name": record.get("name"),
+        "notes": record.get("prompt"),
+        "status": record.get("status"),
+        "avatarId": record.get("heygen_look_id"),
+        "voiceId": record.get("voice_id"),
+        "previewUrls": record.get("preview_urls") or [],
+        "coverUrl": record.get("cover_url"),
+        "generationId": record.get("heygen_generation_id"),
+        "errorMessage": record.get("error_message"),
+        "config": config,
+        "meta": meta,
+        "presetId": meta.get("brand_preset_id"),
+        "source": meta.get("source"),
+        "createdAt": record.get("created_at"),
+        "updatedAt": record.get("updated_at")
+    }
 
 
 # =========================================================================
@@ -39,8 +97,12 @@ async def list_avatars(
 
     try:
         avatars = await heygen.list_avatars(force_refresh=force_refresh)
-        return {"avatars": avatars, "count": len(avatars)}
+        import sys
+        print(f"[MarcelGPT] Fetched {len(avatars)} avatars for tenant {tenant_id}", file=sys.stderr, flush=True)
+        return {"avatars": avatars, "count": len(avatars), "debug": {"tenant_id": str(tenant_id), "avatar_count": len(avatars), "force_refresh": force_refresh}}
     except Exception as e:
+        import sys
+        print(f"[MarcelGPT] Error fetching avatars: {str(e)}", file=sys.stderr, flush=True)
         raise HTTPException(500, f"Failed to fetch avatars: {str(e)}")
 
 
@@ -105,6 +167,95 @@ async def list_presets(
 
     res = query.execute()
     return {"presets": ensure_response(res), "count": len(res.data) if res.data else 0}
+
+# =========================================================================
+# Photo Avatar Look Endpoints
+# =========================================================================
+
+
+@router.get("/photo-avatars/looks")
+async def list_photo_avatar_looks(
+    user=Depends(get_current_user),
+):
+    """List photo avatar looks for the current tenant"""
+    require_permission(user, "marcel_gpt.access")
+
+    tenant_id = user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(400, "User not assigned to a tenant")
+
+    service = PhotoAvatarService(str(tenant_id), str(user.get("id")))
+    looks = await service.list_looks()
+    return {
+        "looks": [serialize_photo_avatar_look(look) for look in looks],
+        "count": len(looks)
+    }
+
+
+@router.post("/photo-avatars/looks")
+async def create_photo_avatar_look(
+    payload: CreateLookRequest,
+    user=Depends(get_current_user),
+):
+    """Create a new HeyGen photo avatar look and persist config"""
+    require_permission(user, "marcel_gpt.manage_presets")
+
+    tenant_id = user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(400, "User not assigned to a tenant")
+
+    service = PhotoAvatarService(str(tenant_id), str(user.get("id")))
+
+    config_dict = payload.config.dict(by_alias=False)
+    options_dict = payload.look_options or None
+
+    look = await service.create_look(
+        name=payload.name,
+        prompt=payload.prompt,
+        notes=payload.notes,
+        config=config_dict,
+        voice_id=payload.voice_id,
+        look_options=options_dict,
+        base_avatar_id=payload.base_avatar_id,
+        base_avatar_preview_url=payload.base_avatar_preview_url
+    )
+
+    return {"look": serialize_photo_avatar_look(look)}
+
+
+@router.get("/photo-avatars/looks/{look_id}")
+async def get_photo_avatar_look(
+    look_id: int,
+    refresh: bool = Query(False, description="Refresh status from HeyGen"),
+    user=Depends(get_current_user),
+):
+    """Fetch a specific photo avatar look"""
+    require_permission(user, "marcel_gpt.access")
+
+    tenant_id = user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(400, "User not assigned to a tenant")
+
+    service = PhotoAvatarService(str(tenant_id), str(user.get("id")))
+    look = await service.get_look(look_id, refresh=refresh)
+    return {"look": serialize_photo_avatar_look(look)}
+
+
+@router.post("/photo-avatars/looks/{look_id}/refresh")
+async def refresh_photo_avatar_look(
+    look_id: int,
+    user=Depends(get_current_user),
+):
+    """Force refresh a look's status from HeyGen"""
+    require_permission(user, "marcel_gpt.access")
+
+    tenant_id = user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(400, "User not assigned to a tenant")
+
+    service = PhotoAvatarService(str(tenant_id), str(user.get("id")))
+    look = await service.refresh_look_status(look_id, auto=False)
+    return {"look": serialize_photo_avatar_look(look)}
 
 
 @router.post("/presets")
@@ -552,3 +703,205 @@ async def create_asset(
 
     res = supabase.table("marcel_assets").insert(asset_data).execute()
     return ensure_response(res)[0] if res.data else None
+
+
+# =========================================================================
+# Script Generation Endpoints (ChatGPT Integration)
+# =========================================================================
+
+@router.post("/scripts/generate")
+async def generate_script(
+    payload: dict = Body(...),
+    user=Depends(get_current_user),
+):
+    """
+    Generate video script using ChatGPT
+
+    Request body:
+    {
+        "prompt": "Generate a script about...",
+        "context": "Additional context (optional)",
+        "max_tokens": 1000,
+        "temperature": 0.7
+    }
+    """
+    require_permission(user, "marcel_gpt.access")
+
+    from app.services.openai_service import OpenAIService
+
+    if not payload.get("prompt"):
+        raise HTTPException(400, "prompt is required")
+
+    try:
+        openai_service = OpenAIService()
+        script = await openai_service.generate_video_script(
+            prompt=payload["prompt"],
+            context=payload.get("context"),
+            max_tokens=payload.get("max_tokens", 1000),
+            temperature=payload.get("temperature", 0.7),
+        )
+
+        return {
+            "script": script,
+            "prompt": payload["prompt"],
+            "generated_at": datetime.now().isoformat()
+        }
+
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Script generation failed: {str(e)}")
+
+
+@router.post("/scripts/from-pdf")
+async def generate_script_from_pdf(
+    file: UploadFile = File(...),
+    user=Depends(get_current_user),
+):
+    """
+    Extract text from PDF and generate video script
+
+    Multipart form data:
+    - file: PDF file
+    - format_instructions: Optional formatting requirements
+    """
+    require_permission(user, "marcel_gpt.access")
+
+    from app.utils.pdf_utils import extract_text_from_pdf
+    from app.services.openai_service import OpenAIService
+
+    if not file.filename.endswith('.pdf'):
+        raise HTTPException(400, "Only PDF files are supported")
+
+    try:
+        # Extract text from PDF
+        pdf_text = await extract_text_from_pdf(file.file)
+
+        # Generate script from extracted text
+        openai_service = OpenAIService()
+        script = await openai_service.extract_dialogue_from_text(
+            text=pdf_text,
+            format_instructions=None  # Could add form field for this
+        )
+
+        return {
+            "script": script,
+            "source": "pdf",
+            "filename": file.filename,
+            "generated_at": datetime.now().isoformat()
+        }
+
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"PDF script generation failed: {str(e)}")
+
+
+@router.post("/scripts/refine")
+async def refine_script(
+    payload: dict = Body(...),
+    user=Depends(get_current_user),
+):
+    """
+    Refine/edit existing script using ChatGPT
+
+    Request body:
+    {
+        "original_script": "Original script text",
+        "refinement_instructions": "Make it more professional..."
+    }
+    """
+    require_permission(user, "marcel_gpt.access")
+
+    from app.services.openai_service import OpenAIService
+
+    if not payload.get("original_script"):
+        raise HTTPException(400, "original_script is required")
+    if not payload.get("refinement_instructions"):
+        raise HTTPException(400, "refinement_instructions is required")
+
+    try:
+        openai_service = OpenAIService()
+        refined_script = await openai_service.refine_script(
+            original_script=payload["original_script"],
+            refinement_instructions=payload["refinement_instructions"],
+        )
+
+        return {
+            "script": refined_script,
+            "original_script": payload["original_script"],
+            "refinement_instructions": payload["refinement_instructions"],
+            "generated_at": datetime.now().isoformat()
+        }
+
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Script refinement failed: {str(e)}")
+
+
+# =========================================================================
+# Incident Report Dialogues Endpoints
+# =========================================================================
+
+@router.get("/incident-reports")
+async def list_incident_reports(
+    user=Depends(get_current_user),
+    category: Optional[str] = Query(None, description="Filter by category"),
+    severity: Optional[str] = Query(None, description="Filter by severity"),
+    department: Optional[str] = Query(None, description="Filter by department"),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    """
+    List incident report dialogues for script generation
+    
+    These are pre-written safety incident dialogues that can be used
+    to quickly generate safety training videos
+    """
+    require_permission(user, "marcel_gpt.access")
+
+    tenant_id = user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(400, "User not assigned to a tenant")
+
+    query = supabase.table("incident_report_dialogues") \
+        .select("*") \
+        .eq("tenant_id", tenant_id)
+
+    if category:
+        query = query.eq("category", category)
+    if severity:
+        query = query.eq("severity", severity)
+    if department:
+        query = query.eq("department", department)
+
+    query = query.range(offset, offset + limit - 1) \
+        .order("created_at", desc=True)
+
+    res = query.execute()
+    return {"reports": ensure_response(res), "count": len(res.data) if res.data else 0}
+
+
+@router.get("/incident-reports/{report_id}")
+async def get_incident_report(
+    report_id: int,
+    user=Depends(get_current_user),
+):
+    """Get specific incident report dialogue"""
+    require_permission(user, "marcel_gpt.access")
+
+    tenant_id = user.get("tenant_id")
+
+    res = supabase.table("incident_report_dialogues") \
+        .select("*") \
+        .eq("id", report_id) \
+        .eq("tenant_id", tenant_id) \
+        .limit(1) \
+        .execute()
+
+    data = ensure_response(res)
+    if not data:
+        raise HTTPException(404, "Incident report not found")
+
+    return data[0]
