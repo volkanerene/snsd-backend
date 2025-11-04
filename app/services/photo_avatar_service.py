@@ -159,7 +159,16 @@ class PhotoAvatarService:
                 "updated_at": datetime.utcnow().isoformat()
             }
 
+            logger.info(f"[PhotoAvatar] Inserting look record to database...")
             look_record = self._insert_look_record(record)
+            logger.info(
+                f"[PhotoAvatar] Look record inserted | id={look_record.get('id')}, "
+                f"heygen_look_id={look_record.get('heygen_look_id')}, "
+                f"status={look_record.get('status')}, "
+                f"cover_url={look_record.get('cover_url')[:50] if look_record.get('cover_url') else 'None'}"
+            )
+
+            logger.info(f"[PhotoAvatar] Creating brand preset for look {look_record['id']}...")
             preset_id = await self._ensure_brand_preset_for_look(
                 look_id=look_record["id"],
                 look_name=name,
@@ -172,13 +181,20 @@ class PhotoAvatarService:
 
             updates: Dict[str, Any] = {}
             if preset_id:
+                logger.info(f"[PhotoAvatar] Brand preset created | preset_id={preset_id}")
                 updates["meta"] = {**(record.get("meta") or {}), "brand_preset_id": preset_id}
+            else:
+                logger.warning(f"[PhotoAvatar] No brand preset ID returned")
+
             if updates:
+                logger.info(f"[PhotoAvatar] Updating look record with preset_id...")
                 look_record = self._update_look_record(look_record["id"], updates)
+
             logger.info(
-                "[PhotoAvatar] existing avatar stored | look_id=%s preset_id=%s",
+                "[PhotoAvatar] ✅ Look created successfully | look_id=%s preset_id=%s status=%s",
                 look_record.get("id"),
-                preset_id
+                preset_id,
+                look_record.get("status")
             )
             return look_record
 
@@ -230,29 +246,223 @@ class PhotoAvatarService:
         look_record = self._insert_look_record(record)
         return await self.refresh_look_status(look_record["id"], auto=False)
 
-    async def list_looks(self) -> List[Dict[str, Any]]:
-        res = (
-            supabase.table(PHOTO_AVATAR_LOOKS_TABLE)
-            .select("*")
-            .eq("tenant_id", self.tenant_id)
-            .order("created_at", desc=True)
-            .execute()
-        )
-        data = ensure_response(res) or []
+    async def list_looks(self, force_refresh: bool = False) -> List[Dict[str, Any]]:
+        """
+        List all avatars AND looks from HeyGen API
+        - Individual avatars from /v2/avatars
+        - Looks from avatar groups /v2/avatar_group.list + /v2/avatar_group/{id}/avatars
+        """
+        import sys
+        print(f"[PhotoAvatar] list_looks | tenant={self.tenant_id} | force_refresh={force_refresh}", file=sys.stderr, flush=True)
 
-        # Refresh pending looks quietly
-        updated: List[Dict[str, Any]] = []
-        for look in data:
-            if look.get("status") in {"pending", "generating", "processing"} and look.get("heygen_generation_id"):
-                try:
-                    refreshed = await self.refresh_look_status(look["id"], auto=True)
-                    updated.append(refreshed)
+        try:
+            looks = []
+            api_lookup = {}
+            seen_avatar_ids = set()
+
+            # 1. Get ALL individual avatars from HeyGen (custom + public)
+            avatars = await self.heygen.list_avatars(force_refresh=force_refresh)
+            print(f"[PhotoAvatar] Found {len(avatars)} individual avatars from /v2/avatars", file=sys.stderr, flush=True)
+
+            for avatar in avatars:
+                avatar_id = avatar.get("avatar_id")
+                if avatar_id in seen_avatar_ids:
                     continue
-                except Exception:
-                    # Ignore background refresh errors; return stale data
-                    pass
-            updated.append(look)
-        return updated
+                seen_avatar_ids.add(avatar_id)
+
+                preview_image = avatar.get("preview_image_url")
+                preview_video = avatar.get("preview_video_url")
+                preview_urls = [url for url in [preview_image, preview_video] if url]
+
+                default_config = {
+                    "backgroundType": "image" if preview_image else "color",
+                    "backgroundImageUrl": preview_image,
+                    "backgroundColor": "#FFFFFF",
+                    "language": "en",
+                    "speed": 1.0,
+                    "enableSubtitles": False,
+                    "width": avatar.get("resolution", {}).get("width", 1280),
+                    "height": avatar.get("resolution", {}).get("height", 720),
+                    "aspectRatio": "16:9",
+                    "avatarStyle": avatar.get("default_avatar_style", "normal"),
+                }
+
+                look = {
+                    "id": avatar_id,
+                    "heygen_look_id": avatar_id,
+                    "name": avatar.get("avatar_name"),
+                    "status": "ready",
+                    "cover_url": preview_urls[0] if preview_urls else None,
+                    "preview_urls": preview_urls,
+                    "meta": {
+                        "source": "heygen_avatar",
+                        "gender": avatar.get("gender"),
+                        "premium": avatar.get("premium"),
+                        "type": avatar.get("type"),
+                        "default_voice_id": avatar.get("default_voice_id")
+                    },
+                    "config": default_config,
+                    "voice_id": avatar.get("default_voice_id"),
+                    "prompt": None,
+                    "created_at": None,
+                    "updated_at": None
+                }
+                looks.append(look)
+                api_lookup[str(look["heygen_look_id"] or look["id"])] = look
+
+            # 2. Get avatar groups and looks inside them
+            avatar_groups = await self.heygen.list_avatar_groups()
+            print(f"[PhotoAvatar] Found {len(avatar_groups)} avatar groups", file=sys.stderr, flush=True)
+
+            for group in avatar_groups:
+                group_id = (
+                    group.get("group_id")
+                    or group.get("avatar_group_id")
+                    or group.get("id")
+                )
+                num_looks = (
+                    group.get("num_looks")
+                    if group.get("num_looks") is not None
+                    else group.get("look_count")
+                    if group.get("look_count") is not None
+                    else group.get("num_avatars")
+                    if group.get("num_avatars") is not None
+                    else group.get("avatar_count", 0)
+                )
+
+                print(f"[PhotoAvatar] Group '{group.get('name')}' ({group_id}): {num_looks} looks", file=sys.stderr, flush=True)
+
+                # Only fetch looks if group has any
+                if group_id and num_looks and num_looks > 0:
+                    try:
+                        group_avatars = await self.heygen.list_avatars_in_group(str(group_id))
+                        print(f"[PhotoAvatar] Fetched {len(group_avatars)} looks from group {group_id}", file=sys.stderr, flush=True)
+
+                        for avatar in group_avatars:
+                            avatar_id = avatar.get("avatar_id")
+                            if avatar_id in seen_avatar_ids:
+                                continue
+                            seen_avatar_ids.add(avatar_id)
+
+                            group_preview = (
+                                avatar.get("preview_image_url")
+                                or avatar.get("portrait_url")
+                                or group.get("preview_image")
+                                or group.get("cover_url")
+                            )
+                            preview_video = avatar.get("preview_video_url")
+                            preview_urls = [
+                                group_preview,
+                                preview_video,
+                                avatar.get("preview_image_url"),
+                                avatar.get("portrait_url")
+                            ]
+                            preview_urls = [url for url in preview_urls if url]
+
+                            default_config = {
+                                "backgroundType": "image" if group_preview else "color",
+                                "backgroundImageUrl": group_preview,
+                                "backgroundColor": "#FFFFFF",
+                                "language": "en",
+                                "speed": 1.0,
+                                "enableSubtitles": False,
+                                "width": avatar.get("resolution", {}).get("width", 1280),
+                                "height": avatar.get("resolution", {}).get("height", 720),
+                                "aspectRatio": "16:9",
+                                "avatarStyle": avatar.get("default_avatar_style", "normal"),
+                            }
+
+                            look = {
+                                "id": avatar_id,
+                                "heygen_look_id": avatar_id,
+                                "name": avatar.get("avatar_name") or f"{group.get('name')} - Look",
+                                "status": "ready",
+                                "cover_url": preview_urls[0] if preview_urls else None,
+                                "preview_urls": preview_urls,
+                                "meta": {
+                                    "source": "heygen_group_look",
+                                    "group_id": group_id,
+                                    "group_name": group.get("name"),
+                                    "gender": avatar.get("gender"),
+                                    "premium": avatar.get("premium"),
+                                    "type": avatar.get("type"),
+                                    "default_voice_id": avatar.get("default_voice_id")
+                                },
+                                "config": default_config,
+                                "voice_id": avatar.get("default_voice_id"),
+                                "prompt": None,
+                                "created_at": None,
+                                "updated_at": None
+                            }
+                            looks.append(look)
+                            api_lookup[str(look["heygen_look_id"] or look["id"])] = look
+                    except Exception as e:
+                        print(f"[PhotoAvatar] Error fetching looks from group {group_id}: {e}", file=sys.stderr, flush=True)
+
+            # Merge in Supabase records (pending/generated looks, overrides)
+            db_res = (
+                supabase.table(PHOTO_AVATAR_LOOKS_TABLE)
+                .select("*")
+                .eq("tenant_id", self.tenant_id)
+                .order("created_at", desc=True)
+                .execute()
+            )
+            db_looks = ensure_response(db_res) or []
+
+            merged_looks: List[Dict[str, Any]] = []
+            merged_keys = set()
+
+            for record in db_looks:
+                key = str(record.get("heygen_look_id") or f"db-{record.get('id')}")
+                existing = api_lookup.get(key, {})
+
+                merged: Dict[str, Any] = {**existing, **record}
+
+                # Ensure preview URLs / cover images are populated
+                preview_urls = merged.get("preview_urls") or existing.get("preview_urls") or []
+                if isinstance(preview_urls, list):
+                    merged["preview_urls"] = preview_urls
+                else:
+                    merged["preview_urls"] = [preview_urls]
+
+                if not merged.get("cover_url") and existing.get("cover_url"):
+                    merged["cover_url"] = existing["cover_url"]
+
+                if not merged.get("config"):
+                    merged["config"] = existing.get("config", {}) or {}
+
+                merged.setdefault("meta", {})
+                merged["meta"] = {
+                    **(existing.get("meta") or {}),
+                    **(record.get("meta") or {})
+                }
+
+                merged_looks.append(merged)
+                merged_keys.add(key)
+
+            # Append remaining HeyGen-only avatars (not customized in DB)
+            for key, look in api_lookup.items():
+                if key in merged_keys:
+                    continue
+                merged_looks.append(look)
+
+            print(f"[PhotoAvatar] TOTAL: {len(merged_looks)} looks (combined Supabase + HeyGen)", file=sys.stderr, flush=True)
+            return merged_looks
+
+        except Exception as e:
+            print(f"[PhotoAvatar] Error fetching from HeyGen API: {e}", file=sys.stderr, flush=True)
+
+            # Fallback to database if API fails
+            db_res = (
+                supabase.table(PHOTO_AVATAR_LOOKS_TABLE)
+                .select("*")
+                .eq("tenant_id", self.tenant_id)
+                .order("created_at", desc=True)
+                .execute()
+            )
+            db_looks = ensure_response(db_res) or []
+            print(f"[PhotoAvatar] Fallback: Returning {len(db_looks)} looks from database", file=sys.stderr, flush=True)
+            return db_looks
 
     async def refresh_look_status(self, look_id: int, auto: bool = False) -> Dict[str, Any]:
         look = self._get_look_record(look_id)

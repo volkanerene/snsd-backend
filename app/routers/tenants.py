@@ -7,6 +7,181 @@ from app.middleware.subscription import get_tenant_usage_stats
 
 router = APIRouter()
 
+def _resolve_tenant_id(requested_tenant_id: str, user: dict) -> str:
+    """
+    Translate special identifiers like 'my' to a concrete tenant id.
+    """
+    if requested_tenant_id == "my":
+        tenant_id = user.get("tenant_id")
+        if not tenant_id:
+            raise HTTPException(400, "User is not associated with any tenant")
+        return tenant_id
+    return requested_tenant_id
+
+
+def _ensure_tenant_access(tenant_id: str, user: dict) -> None:
+    """
+    Ensure the current user has access to the provided tenant id.
+    Super admin (role_id == 1) is always allowed.
+    Company admins (role_id == 2) must belong to the tenant.
+    Other roles are denied unless explicitly a member of the tenant.
+    """
+    role_id = user.get("role_id")
+    if role_id == 1:
+        return  # Super admin
+
+    membership = (
+        supabase.table("tenant_users")
+        .select("id")
+        .eq("tenant_id", tenant_id)
+        .eq("user_id", user["id"])
+        .limit(1)
+        .execute()
+    )
+
+    if not membership.data:
+        raise HTTPException(403, "Access denied")
+
+
+def _hydrate_tenant_user_rows(rows: list[dict]) -> list[dict]:
+    """
+    Attach user and role metadata to tenant_user rows without relying on Supabase FK joins.
+    """
+    if not rows:
+        return []
+
+    user_ids = list({row["user_id"] for row in rows if row.get("user_id")})
+    role_ids = list({row["role_id"] for row in rows if row.get("role_id")})
+
+    user_map = {}
+    if user_ids:
+        profile_res = (
+            supabase.table("profiles")
+            .select("id, email, full_name, avatar_url, status, department, job_title")
+            .in_("id", user_ids)
+            .execute()
+        )
+        for profile in profile_res.data or []:
+            user_map[profile["id"]] = profile
+
+    role_map = {}
+    if role_ids:
+        role_res = (
+            supabase.table("roles")
+            .select("id, name, level")
+            .in_("id", role_ids)
+            .execute()
+        )
+        for role in role_res.data or []:
+            role_map[role["id"]] = role
+
+    enriched: list[dict] = []
+    for row in rows:
+        profile = user_map.get(row.get("user_id"))
+        role = role_map.get(row.get("role_id"))
+
+        if profile:
+            # Mirror fields expected by frontend team view
+            row.setdefault("full_name", profile.get("full_name"))
+            row.setdefault("email", profile.get("email"))
+            row.setdefault("avatar_url", profile.get("avatar_url"))
+            row.setdefault("department", profile.get("department"))
+            row.setdefault("job_title", profile.get("job_title"))
+
+            # Prefer profile status for active flag, fallback to tenant_user status
+            status = profile.get("status")
+            if status is not None:
+                row["is_active"] = status == "active"
+            else:
+                row["is_active"] = row.get("status") == "active"
+        else:
+            row.setdefault("is_active", row.get("status") == "active")
+
+        if role:
+            row["role"] = role
+
+        # Ensure joined_at present for UI. Fallback to created_at.
+        row.setdefault("joined_at", row.get("joined_at") or row.get("created_at"))
+
+        enriched.append(row)
+
+    return enriched
+
+
+def _build_tenant_statistics_payload(tenant_id: str) -> dict:
+    """
+    Compute tenant level statistics shared across endpoints.
+    """
+    members_res = (
+        supabase.table("tenant_users")
+        .select("user_id, role_id, status")
+        .eq("tenant_id", tenant_id)
+        .execute()
+    )
+    members = members_res.data or []
+
+    total_members = len(members)
+    active_members = sum(1 for member in members if member.get("status") == "active")
+    inactive_members = total_members - active_members
+
+    by_role: dict[str, int] = {}
+    for member in members:
+        role_id = member.get("role_id")
+        if role_id is None:
+            continue
+        key = str(role_id)
+        by_role[key] = by_role.get(key, 0) + 1
+
+    contractors_count = (
+        supabase.table("contractors")
+        .select("id", count="exact")
+        .eq("tenant_id", tenant_id)
+        .eq("status", "active")
+        .execute()
+        .count
+        or 0
+    )
+
+    evaluations_count = (
+        supabase.table("frm32_submissions")
+        .select("id", count="exact")
+        .eq("tenant_id", tenant_id)
+        .execute()
+        .count
+        or 0
+    )
+
+    recent_evaluations = (
+        supabase.table("frm32_submissions")
+        .select("id, status, created_at, contractor:contractor_id(name)")
+        .eq("tenant_id", tenant_id)
+        .order("created_at", desc=True)
+        .limit(5)
+        .execute()
+        .data
+        or []
+    )
+
+    counts = {
+        "members": total_members,
+        "users": total_members,  # backward compatibility
+        "contractors": contractors_count,
+        "evaluations": evaluations_count,
+    }
+
+    return {
+        "tenant_id": tenant_id,
+        "total_members": total_members,
+        "active_members": active_members,
+        "inactive_members": inactive_members,
+        "by_role": by_role,
+        "counts": counts,
+        "recent_evaluations": recent_evaluations,
+        "recent_activity": {
+            "evaluations": recent_evaluations,
+        },
+    }
+
 
 @router.get("/")
 async def list_tenants(
@@ -176,37 +351,49 @@ async def get_tenant_users(
     offset: int = Query(0, ge=0),
 ):
     """Get all users in a tenant"""
-    # Check permission
-    if user.get("role_id") not in [1, 2]:  # Not Super Admin or Admin
-        # Check if user belongs to this tenant
-        tenant_check = (
-            supabase.table("tenant_users")
-            .select("id")
-            .eq("tenant_id", tenant_id)
-            .eq("user_id", user["id"])
-            .limit(1)
-            .execute()
-        )
+    tenant_id = _resolve_tenant_id(tenant_id, user)
+    _ensure_tenant_access(tenant_id, user)
 
-        if not tenant_check.data:
-            raise HTTPException(403, "Access denied")
-
-    res = (
+    query = (
         supabase.table("tenant_users")
-        .select(
-            """
-            *,
-            user:user_id(id, email, full_name, avatar_url, status),
-            role:role_id(id, name)
-            """
-        )
+        .select("*")
         .eq("tenant_id", tenant_id)
-        .range(offset, offset + limit - 1)
         .order("joined_at", desc=True)
+        .range(offset, offset + limit - 1)
         .execute()
     )
 
-    return ensure_response(res)
+    data = ensure_response(query)
+    if not data:
+        return []
+
+    return _hydrate_tenant_user_rows(data)
+
+
+@router.get("/my/users")
+async def get_my_tenant_users(
+    user=Depends(get_current_user),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """Convenience endpoint for the current tenant's users"""
+    tenant_id = _resolve_tenant_id("my", user)
+    _ensure_tenant_access(tenant_id, user)
+
+    query = (
+        supabase.table("tenant_users")
+        .select("*")
+        .eq("tenant_id", tenant_id)
+        .order("joined_at", desc=True)
+        .range(offset, offset + limit - 1)
+        .execute()
+    )
+
+    data = ensure_response(query)
+    if not data:
+        return []
+
+    return _hydrate_tenant_user_rows(data)
 
 
 @router.get("/{tenant_id}/statistics")
@@ -216,53 +403,17 @@ async def get_tenant_statistics(
 ):
     """Get tenant statistics dashboard"""
     require_admin(user)
+    tenant_id = _resolve_tenant_id(tenant_id, user)
+    _ensure_tenant_access(tenant_id, user)
+    return _build_tenant_statistics_payload(tenant_id)
 
-    # Get counts
-    users_count = (
-        supabase.table("tenant_users")
-        .select("id", count="exact")
-        .eq("tenant_id", tenant_id)
-        .eq("status", "active")
-        .execute()
-        .count or 0
-    )
 
-    contractors_count = (
-        supabase.table("contractors")
-        .select("id", count="exact")
-        .eq("tenant_id", tenant_id)
-        .eq("status", "active")
-        .execute()
-        .count or 0
-    )
-
-    evaluations_count = (
-        supabase.table("frm32_submissions")
-        .select("id", count="exact")
-        .eq("tenant_id", tenant_id)
-        .execute()
-        .count or 0
-    )
-
-    # Get recent activity
-    recent_evaluations = (
-        supabase.table("frm32_submissions")
-        .select("id, status, created_at, contractor:contractor_id(name)")
-        .eq("tenant_id", tenant_id)
-        .order("created_at", desc=True)
-        .limit(5)
-        .execute()
-        .data or []
-    )
-
-    return {
-        "tenant_id": tenant_id,
-        "counts": {
-            "users": users_count,
-            "contractors": contractors_count,
-            "evaluations": evaluations_count,
-        },
-        "recent_activity": {
-            "evaluations": recent_evaluations,
-        },
-    }
+@router.get("/my/stats")
+async def get_my_tenant_statistics(
+    user=Depends(get_current_user),
+):
+    """Get statistics for the current user's tenant"""
+    require_admin(user)
+    tenant_id = _resolve_tenant_id("my", user)
+    _ensure_tenant_access(tenant_id, user)
+    return _build_tenant_statistics_payload(tenant_id)

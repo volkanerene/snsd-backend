@@ -1,8 +1,8 @@
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
-from typing import List
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Header
+from typing import List, Optional
 
 from app.db.supabase_client import supabase
-from app.routers.deps import ensure_response, require_admin
+from app.routers.deps import ensure_response, require_admin, require_tenant
 from app.utils.auth import get_current_user
 
 router = APIRouter()
@@ -14,30 +14,51 @@ async def list_roles(
     include_permissions: bool = Query(False, description="Include role permissions"),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    x_tenant_id: Optional[str] = Header(None)
 ):
-    """List all roles, optionally with their permissions"""
+    """List all roles, optionally with their permissions
+
+    Company Admins only see:
+    - Global roles (tenant_id IS NULL)
+    - Their tenant's custom roles (tenant_id = their tenant)
+
+    Super Admins see all roles.
+    """
+    # Get user's tenant_id from profile
+    profile = supabase.table("profiles").select("tenant_id, role_id").eq("id", user["id"]).single().execute()
+    user_tenant_id = profile.data.get("tenant_id") if profile.data else None
+    user_role_id = profile.data.get("role_id") if profile.data else None
+
+    query = supabase.table("roles")
+
     if include_permissions:
-        res = (
-            supabase.table("roles")
-            .select(
-                """
-                *,
-                role_permissions(
-                    permission:permission_id(id, name, description, category)
-                )
-                """
+        query = query.select(
+            """
+            *,
+            role_permissions(
+                permission:permission_id(id, name, description, category)
             )
-            .range(offset, offset + limit - 1)
-            .execute()
+            """
         )
     else:
-        res = (
-            supabase.table("roles")
-            .select("*")
-            .range(offset, offset + limit - 1)
-            .execute()
-        )
+        query = query.select("*")
 
+    # Filter by tenant if not super admin
+    if user_role_id != 1:  # Not Super Admin
+        # Show global roles + tenant-specific roles
+        if user_tenant_id:
+            # This requires OR condition - we'll fetch all and filter in Python
+            all_roles = query.range(offset, offset + limit - 1).execute()
+            if all_roles.data:
+                filtered_roles = [
+                    role for role in all_roles.data
+                    if role.get("tenant_id") is None or role.get("tenant_id") == user_tenant_id
+                ]
+                return filtered_roles
+            return []
+
+    # Super Admin sees all
+    res = query.range(offset, offset + limit - 1).execute()
     return ensure_response(res)
 
 
@@ -45,8 +66,13 @@ async def list_roles(
 async def create_role(
     payload: dict = Body(...),
     user=Depends(get_current_user),
+    x_tenant_id: Optional[str] = Header(None)
 ):
-    """Create a new role with permissions (admin only)"""
+    """Create a new role with permissions (admin only)
+
+    Company Admins can create tenant-specific roles.
+    Super Admins can create global or tenant-specific roles.
+    """
     require_admin(user)
 
     name = payload.get("name")
@@ -54,11 +80,17 @@ async def create_role(
     description = payload.get("description")
     level = payload.get("level", 3)
     permission_ids = payload.get("permissions", [])
+    is_global = payload.get("is_global", False)  # Only super admin can set this
 
     if not name:
         raise HTTPException(400, "name is required")
     if not slug:
         raise HTTPException(400, "slug is required")
+
+    # Get user's info
+    profile = supabase.table("profiles").select("tenant_id, role_id").eq("id", user["id"]).single().execute()
+    user_role_id = profile.data.get("role_id") if profile.data else None
+    user_tenant_id = profile.data.get("tenant_id") if profile.data else None
 
     role_data = {
         "name": name,
@@ -66,6 +98,14 @@ async def create_role(
         "description": description,
         "level": level,
     }
+
+    # Set tenant_id based on user role
+    if user_role_id == 1 and is_global:
+        # Super Admin can create global roles
+        role_data["tenant_id"] = None
+    else:
+        # Company Admin creates tenant-specific roles
+        role_data["tenant_id"] = user_tenant_id or x_tenant_id
 
     # Create role
     res = supabase.table("roles").insert(role_data).execute()

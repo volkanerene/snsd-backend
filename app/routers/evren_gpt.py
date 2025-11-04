@@ -29,6 +29,7 @@ from app.schemas.evren_gpt import (
 from app.utils.auth import get_current_user
 from app.routers.deps import require_tenant, require_admin, ensure_response
 from app.db.supabase_client import supabase
+from app.services.email_service import EmailService, render_html_from_text
 
 router = APIRouter(prefix="/evren-gpt", tags=["EvrenGPT"])
 
@@ -60,8 +61,8 @@ async def send_frm32_invitation(contractor_id: str, session_id: str, custom_mess
         .execute()
     )
 
-    # Create form link (this should point to your FRM32 form with session_id)
-    form_link = f"https://snsd-evrengpt.netlify.app/?session={session_id}&contractor={contractor_id}"
+    # Create form link (points to contractor signup page)
+    form_link = f"https://www.snsdconsultant.com/signup?session={session_id}&contractor={contractor_id}"
 
     subject = "EvrenGPT Evaluation Process - FRM32 Form"
     body = f"""
@@ -93,12 +94,24 @@ async def send_frm32_invitation(contractor_id: str, session_id: str, custom_mess
         "status": "pending"
     }).execute()
 
-    # TODO: Integrate with actual email service (SendGrid, AWS SES, etc.)
-    # For now, mark as sent
-    supabase.table("evren_gpt_notifications").update({
-        "status": "sent",
+    notification_id = notification.data[0]['id'] if notification.data else None
+
+    sent, error_message = EmailService.send_email(
+        to_email=contractor['contact_email'],
+        subject=subject,
+        text_body=body,
+        html_body=render_html_from_text(body)
+    )
+
+    update_payload = {
+        "status": "sent" if sent else "failed",
         "sent_at": datetime.now().isoformat()
-    }).eq("id", notification.data[0]['id']).execute()
+    }
+    if not sent and error_message:
+        update_payload["error_message"] = error_message
+
+    if notification_id:
+        supabase.table("evren_gpt_notifications").update(update_payload).eq("id", notification_id).execute()
 
 
 async def trigger_next_form(session_id: str, contractor_id: str, current_form: str, cycle: int):
@@ -145,8 +158,7 @@ async def trigger_next_form(session_id: str, contractor_id: str, current_form: s
     SnSD Consultants Team
     """
 
-    # Create notification
-    supabase.table("evren_gpt_notifications").insert({
+    notification = supabase.table("evren_gpt_notifications").insert({
         "session_id": session_id,
         "contractor_id": contractor_id,
         "recipient_email": supervisor_email,
@@ -155,9 +167,27 @@ async def trigger_next_form(session_id: str, contractor_id: str, current_form: s
         "form_id": next_form,
         "subject": subject,
         "body": body,
-        "status": "sent",  # TODO: Send via email service
-        "sent_at": datetime.now().isoformat()
+        "status": "pending"
     }).execute()
+
+    notification_id = notification.data[0]['id'] if notification.data else None
+
+    sent, error_message = EmailService.send_email(
+        to_email=supervisor_email,
+        subject=subject,
+        text_body=body,
+        html_body=render_html_from_text(body)
+    )
+
+    update_payload = {
+        "status": "sent" if sent else "failed",
+        "sent_at": datetime.now().isoformat()
+    }
+    if not sent and error_message:
+        update_payload["error_message"] = error_message
+
+    if notification_id:
+        supabase.table("evren_gpt_notifications").update(update_payload).eq("id", notification_id).execute()
 
 
 # ================================================

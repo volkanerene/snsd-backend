@@ -9,6 +9,13 @@ class Settings(BaseSettings):
     API_URL: str = "https://api.snsdconsultant.com"  # Public API URL for webhooks
     PORT: int | None = 8000
 
+    # Brevo Email Service (SMTP)
+    BREVO_SMTP_HOST: str | None = None
+    BREVO_SMTP_PORT: int | None = 587
+    BREVO_SMTP_USER: str | None = None
+    BREVO_SMTP_PASSWORD: str | None = None
+    BREVO_FROM_EMAIL: str | None = None
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

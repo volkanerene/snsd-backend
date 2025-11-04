@@ -76,30 +76,18 @@ class HeyGenService:
 
     async def list_avatars(self, force_refresh: bool = False) -> List[Dict]:
         """
-        List available avatars with 24h caching
+        List available avatars - NO CACHING, always fresh from API
 
         Args:
-            force_refresh: Force refresh cache
+            force_refresh: Ignored, always fetches fresh
 
         Returns:
             List of avatar objects
         """
         import sys
-        print(f"[HeyGen] list_avatars called, force_refresh={force_refresh}", file=sys.stderr, flush=True)
+        print(f"[HeyGen] list_avatars called - ALWAYS FRESH (no cache)", file=sys.stderr, flush=True)
 
-        # Check cache first
-        if not force_refresh:
-            cache_threshold = datetime.now() - timedelta(hours=self.CACHE_TTL_HOURS)
-            cached = (supabase.table("catalog_avatars")
-                .select("*")
-                .gte("cached_at", cache_threshold.isoformat())
-                .execute())
-
-            print(f"[HeyGen] Cache check: found {len(cached.data) if cached.data else 0} cached avatars", file=sys.stderr, flush=True)
-            if cached.data:
-                return [item["data"] for item in cached.data]
-
-        # Fetch from API
+        # ALWAYS fetch from API - NO CACHE
         print(f"[HeyGen] Fetching from HeyGen API: GET /v2/avatars", file=sys.stderr, flush=True)
         try:
             response = await self._make_request("GET", "/v2/avatars")
@@ -107,29 +95,11 @@ class HeyGenService:
             # HeyGen API returns: {'error': None, 'data': {'avatars': [...]}}
             avatars = response.get("data", {}).get("avatars", [])
             print(f"[HeyGen] Extracted {len(avatars)} avatars from response", file=sys.stderr, flush=True)
+            return avatars
         except Exception as e:
             print(f"[HeyGen] ERROR calling API: {type(e).__name__}: {str(e)}", file=sys.stderr, flush=True)
             return []
 
-        # Update cache
-        for avatar in avatars:
-            avatar_data = {
-                "avatar_id": avatar["avatar_id"],
-                "avatar_name": avatar.get("avatar_name"),
-                "gender": avatar.get("gender"),
-                "preview_image_url": avatar.get("preview_image_url"),
-                "preview_video_url": avatar.get("preview_video_url"),
-                "is_public": avatar.get("is_public", True),
-                "is_instant": avatar.get("is_instant", False),
-                "data": avatar,
-                "cached_at": datetime.now().isoformat()
-            }
-
-            (supabase.table("catalog_avatars")
-                .upsert(avatar_data, on_conflict="avatar_id")
-                .execute())
-
-        return avatars
 
     async def list_voices(self, force_refresh: bool = False) -> List[Dict]:
         """
@@ -176,6 +146,198 @@ class HeyGenService:
                 .execute())
 
         return voices
+
+    async def list_avatar_groups(self) -> List[Dict]:
+        """
+        List all photo avatar groups
+
+        Returns:
+            List of avatar group dictionaries
+        """
+        import sys
+        print(f"[HeyGen] Fetching avatar groups: GET /v2/avatar_group.list", file=sys.stderr, flush=True)
+        response = await self._make_request("GET", "/v2/avatar_group.list")
+
+        print(f"[HeyGen] list_avatar_groups response keys: {list(response.keys())}", file=sys.stderr, flush=True)
+        data = response.get("data") or {}
+        if isinstance(data, list):
+            groups_raw = data
+        else:
+            groups_raw = (
+                data.get("avatar_groups")
+                or data.get("avatar_group_list")
+                or data.get("list")
+                or data.get("items")
+                or []
+            )
+
+        print(f"[HeyGen] Normalizing {len(groups_raw)} avatar groups", file=sys.stderr, flush=True)
+        groups: List[Dict[str, Any]] = []
+
+        for idx, group in enumerate(groups_raw):
+            if not isinstance(group, dict):
+                continue
+
+            group_id = (
+                group.get("group_id")
+                or group.get("avatar_group_id")
+                or group.get("id")
+            )
+            if group_id:
+                group.setdefault("group_id", group_id)
+                group.setdefault("avatar_group_id", group_id)
+                group.setdefault("id", group_id)
+
+            num_looks = (
+                group.get("num_looks")
+                if group.get("num_looks") is not None
+                else group.get("look_count")
+                if group.get("look_count") is not None
+                else group.get("num_avatars")
+                if group.get("num_avatars") is not None
+                else group.get("avatar_count")
+            )
+            if num_looks is not None:
+                group["num_looks"] = num_looks
+
+            preview_image = (
+                group.get("preview_image")
+                or group.get("preview_image_url")
+                or group.get("cover_url")
+            )
+            if preview_image:
+                group.setdefault("preview_image", preview_image)
+
+            groups.append(group)
+
+            print(
+                f"[HeyGen] Group #{idx+1}: {group.get('group_id', 'NO_ID')} - {group.get('name', 'NO_NAME')} "
+                f"({group.get('num_looks', 'unknown')} looks)",
+                file=sys.stderr,
+                flush=True
+            )
+
+        return groups
+
+    async def list_avatars_in_group(self, group_id: str) -> List[Dict]:
+        """
+        List all avatars (looks) in a specific avatar group
+
+        Args:
+            group_id: Avatar group ID
+
+        Returns:
+            List of avatar (look) dictionaries
+        """
+        import sys
+
+        collected: List[Dict[str, Any]] = []
+        seen_ids: set[str] = set()
+
+        page = 1
+        page_size = 50
+        total_expected = None
+
+        while True:
+            print(
+                f"[HeyGen] Fetching avatars in group {group_id}: page={page}, size={page_size}",
+                file=sys.stderr,
+                flush=True
+            )
+            response = await self._make_request(
+                "GET",
+                f"/v2/avatar_group/{group_id}/avatars",
+                params={"page": page, "page_size": page_size}
+            )
+
+            data = response.get("data") or {}
+            if isinstance(data, list):
+                avatars_raw = data
+            else:
+                avatars_raw = (
+                    data.get("avatar_list")
+                    or data.get("avatars")
+                    or data.get("items")
+                    or []
+                )
+
+            page_total = len(avatars_raw)
+            print(
+                f"[HeyGen]   Received {page_total} avatars (running total {len(collected)})",
+                file=sys.stderr,
+                flush=True
+            )
+
+            for avatar in avatars_raw:
+                if not isinstance(avatar, dict):
+                    continue
+                avatar_id = (
+                    avatar.get("avatar_id")
+                    or avatar.get("id")
+                    or avatar.get("look_id")
+                )
+                if not avatar_id or avatar_id in seen_ids:
+                    continue
+                seen_ids.add(avatar_id)
+
+                avatar.setdefault("avatar_id", avatar_id)
+                avatar.setdefault("look_id", avatar_id)
+
+                preview_image = (
+                    avatar.get("preview_image_url")
+                    or avatar.get("portrait_url")
+                    or avatar.get("cover_url")
+                )
+                if preview_image:
+                    avatar.setdefault("preview_image_url", preview_image)
+
+                collected.append(avatar)
+
+            # Determine pagination limits
+            if total_expected is None:
+                total_expected = (
+                    data.get("total")
+                    or data.get("total_count")
+                    or data.get("total_page_count")
+                    or data.get("total_avatars")
+                )
+                if isinstance(total_expected, str) and total_expected.isdigit():
+                    total_expected = int(total_expected)
+
+            has_more = False
+            if total_expected is not None:
+                has_more = len(collected) < total_expected
+            else:
+                has_more = page_total == page_size and page_total > 0
+
+            if not has_more:
+                break
+
+            page += 1
+
+            # Safety cap to prevent infinite loops
+            if page > 20:
+                print("[HeyGen] Pagination safety stop after 20 pages", file=sys.stderr, flush=True)
+                break
+
+        print(
+            f"[HeyGen] Found {len(collected)} avatars in group {group_id}",
+            file=sys.stderr,
+            flush=True
+        )
+
+        # Log first few avatars
+        for idx, avatar in enumerate(collected[:3]):
+            print(
+                f"[HeyGen]   Avatar #{idx+1}: {avatar.get('avatar_id', 'NO_ID')} - {avatar.get('avatar_name', 'NO_NAME')}",
+                file=sys.stderr,
+                flush=True
+            )
+
+        if len(collected) > 3:
+            print(f"[HeyGen]   ... and {len(collected) - 3} more avatars", file=sys.stderr, flush=True)
+
+        return collected
 
     # =========================================================================
     # Video Generation Methods

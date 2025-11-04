@@ -66,6 +66,8 @@ def serialize_photo_avatar_look(record: Dict[str, Any]) -> Dict[str, Any]:
         "meta": meta,
         "presetId": meta.get("brand_preset_id"),
         "source": meta.get("source"),
+        "groupId": meta.get("group_id"),
+        "groupName": meta.get("group_name"),
         "createdAt": record.get("created_at"),
         "updatedAt": record.get("updated_at")
     }
@@ -142,6 +144,60 @@ async def list_voices(
         raise HTTPException(500, f"Failed to fetch voices: {str(e)}")
 
 
+@router.get("/avatar-groups")
+async def list_avatar_groups(
+    include_avatars: bool = Query(False, description="Include avatars for each group"),
+    user=Depends(get_current_user),
+):
+    """List HeyGen avatar groups for current tenant"""
+    require_permission(user, "marcel_gpt.access")
+
+    tenant_id = user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(400, "User not assigned to a tenant")
+
+    heygen = get_heygen_service(tenant_id)
+    if not heygen:
+        raise HTTPException(400, "HeyGen API key not configured for this tenant")
+
+    try:
+        groups = await heygen.list_avatar_groups()
+        serialized: List[Dict[str, Any]] = []
+
+        for group in groups:
+            group_id = (
+                group.get("group_id")
+                or group.get("avatar_group_id")
+                or group.get("id")
+            )
+            if not group_id:
+                continue
+
+            item: Dict[str, Any] = {
+                "id": group_id,
+                "name": group.get("name"),
+                "numLooks": group.get("num_looks")
+                or group.get("look_count")
+                or group.get("num_avatars")
+                or group.get("avatar_count")
+                or 0,
+                "previewImage": group.get("preview_image")
+                or group.get("preview_image_url")
+                or group.get("cover_url"),
+                "meta": group,
+            }
+
+            if include_avatars and item["numLooks"]:
+                avatars = await heygen.list_avatars_in_group(str(group_id))
+                item["avatars"] = avatars
+
+            serialized.append(item)
+
+        return {"groups": serialized, "count": len(serialized)}
+    except Exception as e:
+        raise HTTPException(500, f"Failed to fetch avatar groups: {str(e)}")
+
+
 # =========================================================================
 # Brand Preset Endpoints
 # =========================================================================
@@ -175,9 +231,13 @@ async def list_presets(
 
 @router.get("/photo-avatars/looks")
 async def list_photo_avatar_looks(
+    force_refresh: bool = False,
     user=Depends(get_current_user),
 ):
     """List photo avatar looks for the current tenant"""
+    import sys
+    print(f"\n[MarcelGPT] list_photo_avatar_looks called | tenant={user.get('tenant_id')} | force_refresh={force_refresh}", file=sys.stderr, flush=True)
+
     require_permission(user, "marcel_gpt.access")
 
     tenant_id = user.get("tenant_id")
@@ -185,11 +245,24 @@ async def list_photo_avatar_looks(
         raise HTTPException(400, "User not assigned to a tenant")
 
     service = PhotoAvatarService(str(tenant_id), str(user.get("id")))
-    looks = await service.list_looks()
-    return {
-        "looks": [serialize_photo_avatar_look(look) for look in looks],
-        "count": len(looks)
+    looks = await service.list_looks(force_refresh=force_refresh)
+
+    print(f"[MarcelGPT] Service returned {len(looks)} looks", file=sys.stderr, flush=True)
+
+    serialized_looks = [serialize_photo_avatar_look(look) for look in looks]
+
+    print(f"[MarcelGPT] Serialized {len(serialized_looks)} looks", file=sys.stderr, flush=True)
+    if serialized_looks:
+        print(f"[MarcelGPT] First look: id={serialized_looks[0].get('id')}, name={serialized_looks[0].get('name')}, avatarId={serialized_looks[0].get('avatarId')}", file=sys.stderr, flush=True)
+
+    response = {
+        "looks": serialized_looks,
+        "count": len(serialized_looks)
     }
+
+    print(f"[MarcelGPT] Returning response with {response['count']} looks\n", file=sys.stderr, flush=True)
+
+    return response
 
 
 @router.post("/photo-avatars/looks")
