@@ -54,16 +54,25 @@ class HTTPSRedirectMiddleware(BaseHTTPMiddleware):
         return response
 
 
-app = FastAPI(
-    title="SnSD API",
-    version="1.1.0",  # Added MarcelGPT video generation
-    # Keep redirect_slashes=True (default) for automatic trailing slash handling
-    # The HTTPSRedirectMiddleware ensures all redirects use HTTPS
-)
+app = FastAPI(title="SnSD API", version="1.1.0")
 
+# CORS — EN ÜSTE
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"^https:\/\/(www\.)?snsdconsultant\.com$",
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:8080",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+        "http://127.0.0.1:8080",
+        "https://www.snsdconsultant.com",
+        "https://snsdconsultant.com",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -73,7 +82,6 @@ app.add_middleware(
 
 # HTTPS redirect SONRA
 app.add_middleware(HTTPSRedirectMiddleware)
-
 # Admin & User Management
 app.include_router(users.router, prefix="/users", tags=["Users"])
 app.include_router(tenants.router, prefix="/tenants", tags=["Tenants"])
