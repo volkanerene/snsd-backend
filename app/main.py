@@ -56,7 +56,10 @@ class HTTPSRedirectMiddleware(BaseHTTPMiddleware):
 
 app = FastAPI(title="SnSD API", version="1.1.0")
 
-# CORS — EN ÜSTE
+# HTTPS redirect ilk
+app.add_middleware(HTTPSRedirectMiddleware)
+
+# CORS en sondan (ilk çalışacak şekilde)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -79,9 +82,6 @@ app.add_middleware(
     expose_headers=["*"],
     max_age=86400,
 )
-
-# HTTPS redirect SONRA
-app.add_middleware(HTTPSRedirectMiddleware)
 # Admin & User Management
 app.include_router(users.router, prefix="/users", tags=["Users"])
 app.include_router(tenants.router, prefix="/tenants", tags=["Tenants"])
