@@ -61,32 +61,18 @@ app = FastAPI(
     # The HTTPSRedirectMiddleware ensures all redirects use HTTPS
 )
 
-# Add HTTPS redirect middleware first (before CORS)
-app.add_middleware(HTTPSRedirectMiddleware)
-
-# CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        # Local development
-        "http://localhost:3000",
-        "http://localhost:3001",
-        "http://localhost:5173",
-        "http://localhost:5174",
-        "http://localhost:8080",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:3001",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:5174",
-        "http://127.0.0.1:8080",
-        # Production
-        "https://www.snsdconsultant.com",
-        "https://snsdconsultant.com",
-    ],
+    allow_origin_regex=r"^https:\/\/(www\.)?snsdconsultant\.com$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=86400,
 )
+
+# HTTPS redirect SONRA
+app.add_middleware(HTTPSRedirectMiddleware)
 
 # Admin & User Management
 app.include_router(users.router, prefix="/users", tags=["Users"])
