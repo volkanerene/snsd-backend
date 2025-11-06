@@ -1,5 +1,8 @@
-from fastapi import APIRouter, Depends, Query
-
+"""
+FRM32 Questions Router
+Handles retrieving FRM32 form questions from database
+"""
+from fastapi import APIRouter, Depends, HTTPException
 from app.db.supabase_client import supabase
 from app.routers.deps import ensure_response
 from app.utils.auth import get_current_user
@@ -8,12 +11,21 @@ router = APIRouter()
 
 
 @router.get("/questions")
-async def list_questions(
-    user=Depends(get_current_user),
-    is_active: bool | None = Query(None),
+async def get_frm32_questions(
+    user=Depends(get_current_user)
 ):
-    query = supabase.table("frm32_questions").select("*").order("position", asc=True)
-    if is_active is not None:
-        query = query.eq("is_active", is_active)
-    res = query.execute()
-    return ensure_response(res)
+    """
+    Get all FRM32 questions ordered by position
+    """
+    try:
+        res = supabase.table("frm32_questions") \
+            .select("*") \
+            .order("position", desc=False) \
+            .execute()
+
+        questions = ensure_response(res)
+        return questions if isinstance(questions, list) else [questions]
+
+    except Exception as e:
+        print(f"[frm32_questions] Error: {e}")
+        raise HTTPException(500, f"Failed to fetch questions: {str(e)}")

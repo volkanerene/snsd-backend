@@ -14,6 +14,7 @@ class FRM32SubmissionBase(BaseModel):
     evaluation_type: str = "periodic"  # periodic, incident, audit
     status: str = "draft"  # draft, submitted, in_review, completed, rejected
     progress_percentage: int = 0
+    answers: Dict[str, Any] = Field(default_factory=dict)
     attachments: List[Dict[str, Any]] = Field(default_factory=list)
     notes: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
@@ -46,6 +47,7 @@ class FRM32SubmissionUpdate(BaseModel):
 class FRM32Submission(FRM32SubmissionBase):
     """Schema for FRM32 submission response"""
     id: str
+    answers: Dict[str, Any] = Field(default_factory=dict)
     submitted_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     final_score: Optional[float] = None
