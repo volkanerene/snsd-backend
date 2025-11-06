@@ -30,11 +30,15 @@ def _ensure_tenant_access(tenant_id: str, user: dict) -> None:
     if role_id == 1:
         return  # Super admin
 
+    user_id = user.get("id")
+    if not user_id:
+        raise HTTPException(401, "User ID not found")
+
     membership = (
         supabase.table("tenant_users")
         .select("id")
         .eq("tenant_id", tenant_id)
-        .eq("user_id", user["id"])
+        .eq("user_id", user_id)
         .limit(1)
         .execute()
     )
