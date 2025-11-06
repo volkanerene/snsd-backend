@@ -136,12 +136,25 @@ async def register_contractor(payload: ContractorSignupRequest) -> SignupRespons
         if existing:
             raise HTTPException(status_code=400, detail="Email already registered")
 
-        # 4) Auth kullanıcı oluştur
-        auth_response = supabase.auth.sign_up({
-            "email": str(payload.email),
-            "password": payload.password,
-        })
-        user = getattr(auth_response, "user", None)
+        # 4) Auth kullanıcı oluştur (email verification bypass - contractor link'ten geldiyse, zaten email doğrulanmış)
+        try:
+            # Use admin API to create user with email already confirmed
+            # since contractor is registering via email link
+            auth_response = supabase.auth.admin.create_user({
+                "email": str(payload.email),
+                "password": payload.password,
+                "email_confirm": True,  # Mark email as confirmed - skip confirmation email
+            })
+            user = getattr(auth_response, "user", None)
+        except Exception as e:
+            print(f"[register_contractor] Admin signup failed, trying regular signup: {e}")
+            # Fallback to regular signup if admin API fails
+            auth_response = supabase.auth.sign_up({
+                "email": str(payload.email),
+                "password": payload.password,
+            })
+            user = getattr(auth_response, "user", None)
+
         if not user:
             print(f"[register_contractor] sign_up response: {auth_response}")
             raise HTTPException(status_code=400, detail="Failed to create user")
@@ -187,7 +200,7 @@ async def register_contractor(payload: ContractorSignupRequest) -> SignupRespons
 
         return SignupResponse(
             success=True,
-            message="Registration successful! Please confirm your email then login.",
+            message="Registration successful! You can now login.",
             user_id=user_id,
         )
 
