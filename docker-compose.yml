@@ -14,7 +14,13 @@ services:
       - SUPABASE_URL=${SUPABASE_URL}
       - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
       - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - SUPABASE_JWT_SECRET=${SUPABASE_JWT_SECRET}
       - PORT=${PORT:-8000}
+      - BREVO_SMTP_HOST=${BREVO_SMTP_HOST}
+      - BREVO_SMTP_PORT=${BREVO_SMTP_PORT}
+      - BREVO_SMTP_USER=${BREVO_SMTP_USER}
+      - BREVO_SMTP_PASSWORD=${BREVO_SMTP_PASSWORD}
+      - BREVO_FROM_EMAIL=${BREVO_FROM_EMAIL}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health')"]
