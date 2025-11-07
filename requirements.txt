@@ -4,6 +4,8 @@ supabase
 httpx
 pyjwt[crypto]
 email-validator
+aiohttp
+openai
 
 pydantic>=2.0
 pydantic-settings>=2.2
