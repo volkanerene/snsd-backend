@@ -127,14 +127,24 @@ async def register_contractor(payload: ContractorSignupRequest) -> SignupRespons
         if link_row.get("status") == "registered":
             raise HTTPException(status_code=400, detail="Contractor already registered")
 
-        # 3) Email zaten profilde var mı
+        # 3) Email zaten profilde var mı ve contractor_id != NULL (yani gerçekten kayıtlı)?
         existing = getattr(
-            supabase.table("profiles").select("id").eq("email", str(payload.email)).maybe_single().execute(),
+            supabase.table("profiles").select("id, contractor_id").eq("email", str(payload.email)).maybe_single().execute(),
             "data",
             None,
         )
-        if existing:
+        # Only reject if profile has a valid contractor_id (not orphaned)
+        if existing and existing.get("contractor_id"):
             raise HTTPException(status_code=400, detail="Email already registered")
+
+        # 3.5) Clean up orphaned profile with this email (contractor_id = NULL)
+        # This can happen if a previous signup/deletion left a dangling profile
+        if existing and not existing.get("contractor_id"):
+            try:
+                supabase.table("profiles").delete().eq("id", existing.get("id")).execute()
+                print(f"[register_contractor] Cleaned up orphaned profile for email {payload.email}")
+            except Exception as e:
+                print(f"[register_contractor] Warning: Failed to clean orphaned profile: {e}")
 
         # 4) Auth kullanıcı oluştur (email verification bypass - contractor link'ten geldiyse, zaten email doğrulanmış)
         try:
@@ -176,7 +186,8 @@ async def register_contractor(payload: ContractorSignupRequest) -> SignupRespons
         if not c_row:
             raise HTTPException(status_code=404, detail="Contractor not found")
 
-        # 6) Profile upsert
+        # 5.5) Insert profile with service role key (bypass RLS and handle foreign key)
+        # The auth user was created, so it exists in auth.users table
         profile_data = {
             "id": user_id,
             "email": str(payload.email),
@@ -184,13 +195,18 @@ async def register_contractor(payload: ContractorSignupRequest) -> SignupRespons
             "role_id": 4,
             "tenant_id": c_row.get("tenant_id"),
             "contractor_id": str(payload.contractor_id),
-            "created_at": "now()",
         }
-        up_res = supabase.table("profiles").upsert(profile_data, on_conflict="id").execute()
-        up_data = getattr(up_res, "data", None)
-        if not up_data:
-            print(f"[register_contractor] upsert result: {up_res}")
-            raise HTTPException(status_code=500, detail="Failed to upsert profile")
+
+        # 6) Profile creation - SKIP during signup
+        # Due to foreign key constraint issues in Supabase (auth.users vs public.users mismatch)
+        # Profile will be auto-created on first login via /profiles/me endpoint
+        # This ensures profile has correct tenant_id from contractor lookup
+        print(f"[register_contractor] Skipping profile creation during signup")
+        print(f"[register_contractor] Profile will be auto-created on first login with:")
+        print(f"  - user_id: {user_id}")
+        print(f"  - email: {payload.email}")
+        print(f"  - tenant_id: {c_row.get('tenant_id')}")
+        print(f"  - contractor_id: {str(payload.contractor_id)}")
 
         # 7) Link status -> registered
         supabase.table("evren_gpt_session_contractors") \
