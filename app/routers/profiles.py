@@ -24,7 +24,84 @@ async def get_me(user=Depends(get_current_user)):
     )
     data = ensure_response(res)
     if not data:
-        raise HTTPException(404, "Not found")
+        # Profile doesn't exist - try to create a default one
+        # This handles cases where profile creation failed during signup
+        user_email = user.get("email", "")
+
+        # CRITICAL: We MUST find the contractor to get tenant_id
+        # Without tenant_id, the profile will cause 403/400 errors on all endpoints
+        contractor_id = None
+        tenant_id = None
+
+        try:
+            # Query contractors by contact_email
+            contractor_res = (
+                supabase.table("contractors")
+                .select("id, tenant_id, contact_email")
+                .eq("contact_email", user_email)
+                .limit(1)
+                .execute()
+            )
+
+            if contractor_res and contractor_res.data:
+                if isinstance(contractor_res.data, list) and len(contractor_res.data) > 0:
+                    contractor = contractor_res.data[0]
+                    contractor_id = contractor.get("id")
+                    tenant_id = contractor.get("tenant_id")
+                elif isinstance(contractor_res.data, dict):
+                    contractor_id = contractor_res.data.get("id")
+                    tenant_id = contractor_res.data.get("tenant_id")
+
+        except Exception as e:
+            # If we can't query contractors, profile creation will fail anyway
+            # Better to raise error now with clear message
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to lookup contractor information for email {user_email}: {str(e)}"
+            )
+
+        # If contractor not found, we CANNOT create a valid profile
+        # Without tenant_id, all endpoints will fail with 403/400
+        if not contractor_id or not tenant_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Contractor not found for email {user_email}. Please contact support to link your account."
+            )
+
+        # Now create profile with valid tenant_id and contractor_id
+        try:
+            default_profile = {
+                "id": user_id,
+                "email": user_email,
+                "full_name": user_email.split("@")[0],
+                "is_active": True,
+                "tenant_id": tenant_id,
+                "contractor_id": contractor_id,
+            }
+
+            create_res = supabase.table("profiles").insert(default_profile).execute()
+
+            if create_res and create_res.data:
+                created_data = create_res.data
+                if isinstance(created_data, list) and len(created_data) > 0:
+                    return created_data[0]
+                elif isinstance(created_data, dict):
+                    return created_data
+
+            # If insert succeeded but no data returned, something is wrong
+            raise HTTPException(
+                status_code=500,
+                detail="Profile creation succeeded but returned no data"
+            )
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            # If profile insert fails, it's likely due to foreign key or RLS issues
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to auto-create profile: {str(e)}"
+            )
     if isinstance(data, list):
         return data[0]
     return data
