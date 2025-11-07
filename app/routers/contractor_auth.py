@@ -183,6 +183,7 @@ async def register_contractor(payload: ContractorSignupRequest) -> SignupRespons
             "full_name": c_row.get("name") or "",
             "role_id": 4,
             "tenant_id": c_row.get("tenant_id"),
+            "contractor_id": str(payload.contractor_id),
             "created_at": "now()",
         }
         up_res = supabase.table("profiles").upsert(profile_data, on_conflict="id").execute()

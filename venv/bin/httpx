@@ -1,4 +1,4 @@
-#!/Users/volkaneren/snsd-backend/venv/bin/python3.12
+#!/Users/volkaneren/work/snsd/snsd-backend/venv/bin/python3.13
 # -*- coding: utf-8 -*-
 import re
 import sys
