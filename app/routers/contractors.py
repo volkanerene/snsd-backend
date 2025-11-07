@@ -92,3 +92,57 @@ async def update_contractor(
     if isinstance(data, list):
         return data[0]
     return data
+
+
+@router.delete("/{contractor_id}")
+async def delete_contractor(
+    contractor_id: str,
+    user=Depends(get_current_user),
+    tenant_id: str = Depends(require_tenant),
+):
+    """Delete a contractor and all associated data (cascade delete)"""
+    require_admin(user)
+
+    # 1) Verify contractor exists and belongs to tenant
+    contractor_res = (
+        supabase.table("contractors")
+        .select("id")
+        .eq("id", contractor_id)
+        .eq("tenant_id", tenant_id)
+        .limit(1)
+        .execute()
+    )
+    contractor = ensure_response(contractor_res)
+    if not contractor:
+        raise HTTPException(404, "Contractor not found")
+
+    try:
+        # 2) Delete all FRM32 submissions for this contractor
+        supabase.table("frm32_submissions").delete().eq(
+            "contractor_id", contractor_id
+        ).eq("tenant_id", tenant_id).execute()
+
+        # 3) Delete evren_gpt_session_contractors records
+        supabase.table("evren_gpt_session_contractors").delete().eq(
+            "contractor_id", contractor_id
+        ).execute()
+
+        # 4) Delete profile records for this contractor
+        supabase.table("profiles").delete().eq(
+            "contractor_id", contractor_id
+        ).execute()
+
+        # 5) Delete the contractor itself
+        delete_res = (
+            supabase.table("contractors")
+            .delete()
+            .eq("id", contractor_id)
+            .eq("tenant_id", tenant_id)
+            .execute()
+        )
+        ensure_response(delete_res)
+
+        return {"success": True, "message": "Contractor deleted successfully"}
+
+    except Exception as e:
+        raise HTTPException(500, f"Failed to delete contractor: {str(e)}")
