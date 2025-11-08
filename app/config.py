@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str | None = None
     API_URL: str = "https://api.snsdconsultant.com"  # Public API URL for webhooks
     PORT: int | None = 8000
+    DASHBOARD_BASE_URL: str = "https://app.snsdconsultant.com"
 
     # Brevo Email Service (SMTP)
     BREVO_SMTP_HOST: str | None = None

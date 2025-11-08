@@ -147,6 +147,7 @@ async def register_contractor(payload: ContractorSignupRequest) -> SignupRespons
                 print(f"[register_contractor] Warning: Failed to clean orphaned profile: {e}")
 
         # 4) Auth kullanıcı oluştur (email verification bypass - contractor link'ten geldiyse, zaten email doğrulanmış)
+        print(f"[register_contractor] Creating auth user for email: {payload.email}")
         try:
             # Use admin API to create user with email already confirmed
             # since contractor is registering via email link
@@ -155,22 +156,35 @@ async def register_contractor(payload: ContractorSignupRequest) -> SignupRespons
                 "password": payload.password,
                 "email_confirm": True,  # Mark email as confirmed - skip confirmation email
             })
+            print(f"[register_contractor] Admin create_user response: {auth_response}")
             user = getattr(auth_response, "user", None)
+            print(f"[register_contractor] Admin signup user object: {user}")
         except Exception as e:
-            print(f"[register_contractor] Admin signup failed, trying regular signup: {e}")
+            print(f"[register_contractor] Admin signup failed: {str(e)}, trying regular signup")
             # Fallback to regular signup if admin API fails
-            auth_response = supabase.auth.sign_up({
-                "email": str(payload.email),
-                "password": payload.password,
-            })
-            user = getattr(auth_response, "user", None)
+            try:
+                auth_response = supabase.auth.sign_up({
+                    "email": str(payload.email),
+                    "password": payload.password,
+                })
+                print(f"[register_contractor] Regular sign_up response: {auth_response}")
+                user = getattr(auth_response, "user", None)
+                print(f"[register_contractor] Regular signup user object: {user}")
+            except Exception as e2:
+                print(f"[register_contractor] Regular signup also failed: {str(e2)}")
+                raise HTTPException(status_code=400, detail=f"Failed to create auth user: {str(e2)}")
 
         if not user:
-            print(f"[register_contractor] sign_up response: {auth_response}")
-            raise HTTPException(status_code=400, detail="Failed to create user")
+            print(f"[register_contractor] ERROR: User object is None!")
+            print(f"[register_contractor] Full response: {auth_response}")
+            raise HTTPException(status_code=400, detail="Failed to create user - no user object returned")
 
         user_id = getattr(user, "id", None)
+        print(f"[register_contractor] Auth user ID: {user_id}")
+
         if not user_id:
+            print(f"[register_contractor] ERROR: user_id is missing from user object!")
+            print(f"[register_contractor] User object contents: {user}")
             raise HTTPException(status_code=400, detail="Auth user ID missing")
 
         # 5) Contractor bilgisi
@@ -186,27 +200,39 @@ async def register_contractor(payload: ContractorSignupRequest) -> SignupRespons
         if not c_row:
             raise HTTPException(status_code=404, detail="Contractor not found")
 
-        # 5.5) Insert profile with service role key (bypass RLS and handle foreign key)
+        # 6) Create profile with all required data
         # The auth user was created, so it exists in auth.users table
         profile_data = {
             "id": user_id,
             "email": str(payload.email),
             "full_name": c_row.get("name") or "",
-            "role_id": 4,
+            "is_active": True,
             "tenant_id": c_row.get("tenant_id"),
             "contractor_id": str(payload.contractor_id),
+            "role_id": 4,  # Contractor Admin role
         }
 
-        # 6) Profile creation - SKIP during signup
-        # Due to foreign key constraint issues in Supabase (auth.users vs public.users mismatch)
-        # Profile will be auto-created on first login via /profiles/me endpoint
-        # This ensures profile has correct tenant_id from contractor lookup
-        print(f"[register_contractor] Skipping profile creation during signup")
-        print(f"[register_contractor] Profile will be auto-created on first login with:")
+        print(f"[register_contractor] Creating profile with data:")
         print(f"  - user_id: {user_id}")
         print(f"  - email: {payload.email}")
+        print(f"  - full_name: {c_row.get('name')}")
         print(f"  - tenant_id: {c_row.get('tenant_id')}")
         print(f"  - contractor_id: {str(payload.contractor_id)}")
+        print(f"  - role_id: 4 (Contractor Admin)")
+
+        try:
+            # Try INSERT - if profile already exists (Supabase auto-created it), UPDATE instead
+            profile_res = supabase.table("profiles").insert(profile_data).execute()
+            print(f"[register_contractor] ✅ Profile created successfully")
+        except Exception as e:
+            # If INSERT fails (e.g., profile already exists), try UPDATE
+            print(f"[register_contractor] INSERT failed: {str(e)}, attempting UPDATE...")
+            try:
+                profile_res = supabase.table("profiles").update(profile_data).eq("id", user_id).execute()
+                print(f"[register_contractor] ✅ Profile updated successfully")
+            except Exception as e2:
+                print(f"[register_contractor] ERROR: Failed to create/update profile: {str(e2)}")
+                raise HTTPException(status_code=500, detail=f"Failed to create profile: {str(e2)}")
 
         # 7) Link status -> registered
         supabase.table("evren_gpt_session_contractors") \

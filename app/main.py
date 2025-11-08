@@ -15,6 +15,9 @@ from app.routers import (
     frm32_questions,
     frm32_scores,
     frm32_submissions,
+    frm33_submissions,
+    frm34_submissions,
+    frm35_submissions,
     frm35_invites,
     invitations,
     k2_evaluations,
@@ -109,6 +112,9 @@ app.include_router(frm32_questions.router, prefix="/frm32", tags=["FRM32 Questio
 app.include_router(frm32_submissions.router, prefix="/frm32", tags=["FRM32 Submissions"])
 app.include_router(frm32_answers.router, prefix="/frm32", tags=["FRM32 Answers"])
 app.include_router(frm32_scores.router, prefix="/frm32", tags=["FRM32 Scores"])
+app.include_router(frm33_submissions.router, tags=["FRM33 Submissions"])
+app.include_router(frm34_submissions.router, tags=["FRM34 Submissions"])
+app.include_router(frm35_submissions.router, tags=["FRM35 Submissions"])
 app.include_router(k2_evaluations.router, prefix="/k2", tags=["K2 Evaluations"])
 app.include_router(final_scores.router, prefix="/final-scores", tags=["Final Scores"])
 app.include_router(frm35_invites.router, prefix="/frm35", tags=["FRM35 Invites"])

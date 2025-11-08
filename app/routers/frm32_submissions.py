@@ -1,14 +1,38 @@
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, UploadFile, File, BackgroundTasks
 from datetime import datetime, timezone
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 from app.db.supabase_client import supabase
 from app.routers.deps import ensure_response, require_tenant
 from app.utils.auth import get_current_user
+from app.services.email_service import EmailService, render_html_from_text
+from app.config import settings
 
 router = APIRouter()
 
 USER_EDITABLE_FIELDS = {"progress_percentage", "notes", "answers", "scores"}
+REQUIRED_DOCUMENT_IDS = {
+    "doc-1",
+    "doc-4",
+    "doc-6",
+    "doc-7",
+    "doc-7.1",
+    "doc-8",
+    "doc-11",
+    "doc-12",
+    "doc-13",
+}
+
+
+def _has_answer(value: Any) -> bool:
+    """Check whether an answer value is considered filled."""
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip() != ""
+    if isinstance(value, (list, dict)):
+        return len(value) > 0
+    return True
 
 
 @router.get("/submissions")
@@ -327,23 +351,61 @@ async def submit_submission(
             raise HTTPException(404, "Submission not found")
 
         submission_data = submission if isinstance(submission, dict) else submission[0]
+        answers = submission_data.get("answers") or {}
 
-        # VALIDATE: Check that at least one file has been uploaded
+        # VALIDATE: Ensure all questions are answered before submission
+        questions_res = (
+            supabase.table("frm32_questions")
+            .select("question_code")
+            .order("position")
+            .execute()
+        )
+        questions = ensure_response(questions_res) or []
+        unanswered_questions = [
+            q["question_code"]
+            for q in questions
+            if not _has_answer(answers.get(q["question_code"]))
+        ]
+        if unanswered_questions:
+            raise HTTPException(
+                400,
+                f"Cannot submit: {len(unanswered_questions)} unanswered question(s) remain"
+            )
+
+        # VALIDATE: Check that required files have been uploaded
         attachments = submission_data.get("attachments", []) or []
-        if not attachments or len(attachments) == 0:
+        if not attachments:
             raise HTTPException(
                 400,
                 "Cannot submit: Please upload required documents before submitting. At least one file is required."
             )
 
+        uploaded_doc_ids = {
+            att.get("docId")
+            for att in attachments
+            if isinstance(att, dict) and att.get("docId")
+        }
+        missing_required_docs = sorted(
+            doc_id for doc_id in REQUIRED_DOCUMENT_IDS if doc_id not in uploaded_doc_ids
+        )
+        if missing_required_docs:
+            raise HTTPException(
+                400,
+                "Cannot submit: Missing required documents ({docs})".format(
+                    docs=", ".join(missing_required_docs)
+                )
+            )
+
         # Update submission status to 'submitted'
         now = datetime.now(timezone.utc).isoformat()
+        progress_value = 100 if questions else max(submission_data.get("progress_percentage") or 0, 100)
         update_res = (
             supabase.table("frm32_submissions")
             .update({
                 "status": "submitted",
                 "submitted_at": now,
-                "updated_at": now
+                "updated_at": now,
+                "progress_percentage": progress_value
             })
             .eq("id", submission_id)
             .eq("tenant_id", tenant_id)
@@ -388,7 +450,7 @@ async def submit_submission(
         raise HTTPException(500, f"Failed to submit: {str(e)}")
 
 
-async def _notify_supervisor_submission(
+def _notify_supervisor_submission(
     submission: Dict[str, Any],
     contractor: Dict[str, Any]
 ):
@@ -396,13 +458,280 @@ async def _notify_supervisor_submission(
     Background task: Send supervisor notification when submission is completed
     """
     try:
-        print(f"[supervisor_notification] FRM32 submitted for contractor: {contractor.get('name')}")
-        # TODO: Implement email sending to supervisor(s)
-        # EmailService.send_email(
-        #     to_email=supervisor_email,
-        #     subject=f"FRM32 Submission: {contractor['name']}",
-        #     text_body=...,
-        #     html_body=...
-        # )
+        tenant_id = submission.get("tenant_id")
+        if not tenant_id:
+            print("[supervisor_notification] Missing tenant_id on submission; cannot notify")
+            return
+
+        supervisors_res = (
+            supabase.table("profiles")
+            .select("id, full_name, email, username, notification_preferences")
+            .eq("tenant_id", tenant_id)
+            .eq("role_id", 5)  # Supervisor role
+            .eq("is_active", True)
+            .execute()
+        )
+        supervisors = ensure_response(supervisors_res) or []
+        supervisors = [
+            sup for sup in supervisors
+            if sup.get("email")
+            and ((sup.get("notification_preferences") or {}).get("email", True))
+        ]
+
+        if not supervisors:
+            print(f"[supervisor_notification] No active supervisors with email for tenant {tenant_id}")
+            return
+
+        contractor_name = contractor.get("name") or contractor.get("legal_name") or "Contractor"
+        evaluation_period = submission.get("evaluation_period") or "current period"
+        submission_id = submission.get("id")
+        submitted_at = submission.get("submitted_at") or datetime.now(timezone.utc).isoformat()
+        dashboard_base = getattr(settings, "DASHBOARD_BASE_URL", None) or "https://app.snsdconsultant.com"
+        frm32_link = f"{dashboard_base.rstrip('/')}/dashboard/evren-gpt/frm32?submission={submission_id}"
+
+        for supervisor in supervisors:
+            recipient_email = supervisor.get("email")
+            recipient_name = supervisor.get("full_name") or supervisor.get("username") or "Supervisor"
+            subject = f"FRM32 Tamamlandı - {contractor_name}"
+            body = f"""
+Merhaba {recipient_name},
+
+{contractor_name} firmasının {evaluation_period} dönemi FRM32 formu {submitted_at} tarihinde gönderildi.
+
+Formu incelemek için aşağıdaki bağlantıyı kullanabilirsiniz:
+{frm32_link}
+
+İyi çalışmalar,
+SnSD Consultants
+"""
+
+            notification_record = (
+                supabase.table("frm32_submission_notifications")
+                .insert({
+                    "submission_id": submission_id,
+                    "contractor_id": contractor.get("id"),
+                    "tenant_id": tenant_id,
+                    "recipient_email": recipient_email,
+                    "recipient_name": recipient_name,
+                    "subject": subject,
+                    "body": body,
+                    "status": "pending",
+                })
+                .execute()
+            )
+            notification_id = None
+            record_data = notification_record.data if notification_record else None
+            if record_data:
+                if isinstance(record_data, list) and record_data:
+                    notification_id = record_data[0].get("id")
+                elif isinstance(record_data, dict):
+                    notification_id = record_data.get("id")
+
+            sent, error_message = EmailService.send_email(
+                to_email=recipient_email,
+                subject=subject,
+                text_body=body,
+                html_body=render_html_from_text(body)
+            )
+
+            status = "sent" if sent else f"failed ({error_message})"
+            print(f"[supervisor_notification] Email {status} to {recipient_email} for submission {submission_id}")
+
+            if notification_id:
+                update_payload = {
+                    "status": "sent" if sent else "failed",
+                    "sent_at": datetime.now(timezone.utc).isoformat(),
+                }
+                if error_message:
+                    update_payload["error_message"] = error_message
+                supabase.table("frm32_submission_notifications").update(update_payload).eq("id", notification_id).execute()
+
     except Exception as e:
         print(f"[supervisor_notification] Error: {e}")
+def _require_supervisor_role(user: dict):
+    """
+    Allow supervisors (role_id 5) or admin/HSE roles (<=3) to score submissions.
+    """
+    role_id = user.get("role_id")
+    if role_id is None or (role_id > 3 and role_id != 5):
+        raise HTTPException(403, "Supervisor permissions required")
+
+
+def _fetch_k2_metrics(codes: Optional[List[str]] = None):
+    query = supabase.table("frm32_k2_metrics").select("*")
+    if codes:
+        query = query.in_("k2_code", codes)
+    res = query.order("k2_code").execute()
+    return ensure_response(res) or []
+
+
+def _recalculate_final_score(submission_id: str, tenant_id: str) -> float:
+    scores_res = (
+        supabase.table("frm32_submission_scores")
+        .select("k2_code, score")
+        .eq("submission_id", submission_id)
+        .execute()
+    )
+    scores = ensure_response(scores_res) or []
+    if not scores:
+        supabase.table("frm32_submissions").update({"final_score": None}).eq("id", submission_id).eq("tenant_id", tenant_id).execute()
+        return 0.0
+
+    k2_codes = [row["k2_code"] for row in scores]
+    metrics = _fetch_k2_metrics(k2_codes)
+    metric_map = {m["k2_code"]: m for m in metrics}
+
+    total = 0.0
+    for row in scores:
+        weight = float(metric_map[row["k2_code"]]["weight_percentage"])
+        score_value = row["score"]
+        total += (weight * score_value) / 10
+
+    final_score = round(total, 2)
+    supabase.table("frm32_submissions").update({"final_score": final_score}).eq("id", submission_id).eq("tenant_id", tenant_id).execute()
+    return final_score
+
+
+@router.get("/k2-metrics")
+async def list_k2_metrics(user=Depends(get_current_user)):
+    """
+    Return static K2 scoring metadata (weights + comments)
+    """
+    metrics = _fetch_k2_metrics()
+    return metrics
+
+
+@router.get("/submissions/{submission_id}/k2-scores")
+async def get_submission_k2_scores(
+    submission_id: str,
+    user=Depends(get_current_user),
+    tenant_id: str = Depends(require_tenant),
+):
+    submission_res = (
+        supabase.table("frm32_submissions")
+        .select("id, final_score")
+        .eq("id", submission_id)
+        .eq("tenant_id", tenant_id)
+        .limit(1)
+        .execute()
+    )
+    submission = ensure_response(submission_res)
+    if not submission:
+        raise HTTPException(404, "Submission not found")
+    if isinstance(submission, list):
+        submission = submission[0]
+
+    metrics = _fetch_k2_metrics()
+    scores_res = (
+        supabase.table("frm32_submission_scores")
+        .select("k2_code, score, comment_en, comment_tr")
+        .eq("submission_id", submission_id)
+        .execute()
+    )
+    score_data = ensure_response(scores_res) or []
+    score_map = {row["k2_code"]: row for row in score_data}
+
+    merged = []
+    for metric in metrics:
+        current = score_map.get(metric["k2_code"])
+        merged.append(
+            {
+                "k2_code": metric["k2_code"],
+                "scope_en": metric["scope_en"],
+                "scope_tr": metric["scope_tr"],
+                "weight_percentage": float(metric["weight_percentage"]),
+                "comments": {
+                    "0": {
+                        "en": metric["comment_0_en"],
+                        "tr": metric["comment_0_tr"],
+                    },
+                    "3": {
+                        "en": metric["comment_3_en"],
+                        "tr": metric["comment_3_tr"],
+                    },
+                    "6": {
+                        "en": metric["comment_6_en"],
+                        "tr": metric["comment_6_tr"],
+                    },
+                    "10": {
+                        "en": metric["comment_10_en"],
+                        "tr": metric["comment_10_tr"],
+                    },
+                },
+                "score": current["score"] if current else None,
+                "selected_comment_en": current["comment_en"] if current else None,
+                "selected_comment_tr": current["comment_tr"] if current else None,
+            }
+        )
+
+    return {"scores": merged, "final_score": submission.get("final_score")}
+
+
+@router.put("/submissions/{submission_id}/k2-scores")
+async def update_submission_k2_scores(
+    submission_id: str,
+    payload: dict = Body(...),
+    user=Depends(get_current_user),
+    tenant_id: str = Depends(require_tenant),
+):
+    _require_supervisor_role(user)
+
+    raw_scores = payload.get("scores")
+    if not raw_scores and payload.get("k2_code"):
+        raw_scores = [payload]
+    if not raw_scores:
+        raise HTTPException(400, "scores payload required")
+
+    submission_res = (
+        supabase.table("frm32_submissions")
+        .select("id")
+        .eq("id", submission_id)
+        .eq("tenant_id", tenant_id)
+        .limit(1)
+        .execute()
+    )
+    submission = ensure_response(submission_res)
+    if not submission:
+        raise HTTPException(404, "Submission not found")
+
+    k2_codes = []
+    for item in raw_scores:
+        code = item.get("k2_code")
+        if not code:
+            raise HTTPException(400, "k2_code missing in scores payload")
+        k2_codes.append(code)
+    metrics = _fetch_k2_metrics(k2_codes)
+    metric_map = {m["k2_code"]: m for m in metrics}
+
+    score_payload = []
+    for item in raw_scores:
+        code = item["k2_code"]
+        score_value = item.get("score")
+        if score_value not in (0, 3, 6, 10):
+            raise HTTPException(400, f"Invalid score for {code}. Allowed values: 0,3,6,10")
+        metric = metric_map.get(code)
+        if not metric:
+            raise HTTPException(400, f"Unknown K2 code: {code}")
+        prefix = {0: "comment_0", 3: "comment_3", 6: "comment_6", 10: "comment_10"}[score_value]
+        comment_en = metric[f"{prefix}_en"]
+        comment_tr = metric[f"{prefix}_tr"]
+        score_payload.append(
+            {
+                "submission_id": submission_id,
+                "k2_code": code,
+                "score": score_value,
+                "comment_en": comment_en,
+                "comment_tr": comment_tr,
+            }
+        )
+
+    supabase.table("frm32_submission_scores").upsert(
+        score_payload,
+        on_conflict="submission_id,k2_code"
+    ).execute()
+
+    final_score = _recalculate_final_score(submission_id, tenant_id)
+
+    updated_scores = await get_submission_k2_scores(submission_id, user, tenant_id)
+    updated_scores["final_score"] = final_score
+    return updated_scores
