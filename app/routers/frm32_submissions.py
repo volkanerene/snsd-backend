@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, UploadFile, File, BackgroundTasks
 from datetime import datetime, timezone
+from typing import Dict, Any, Optional
 
 from app.db.supabase_client import supabase
 from app.routers.deps import ensure_response, require_tenant
@@ -7,7 +8,7 @@ from app.utils.auth import get_current_user
 
 router = APIRouter()
 
-USER_EDITABLE_FIELDS = {"progress_percentage", "notes", "answers"}
+USER_EDITABLE_FIELDS = {"progress_percentage", "notes", "answers", "scores"}
 
 
 @router.get("/submissions")
@@ -299,3 +300,109 @@ async def upload_submission_file(
         raise
     except Exception as e:
         raise HTTPException(500, f"Failed to upload file: {str(e)}")
+
+
+@router.post("/submissions/{submission_id}/submit")
+async def submit_submission(
+    submission_id: str,
+    user=Depends(get_current_user),
+    tenant_id: str = Depends(require_tenant),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+):
+    """
+    Submit FRM32 submission - validates required files exist, updates status to 'submitted'
+    """
+    try:
+        # Get submission
+        submission_res = (
+            supabase.table("frm32_submissions")
+            .select("*")
+            .eq("id", submission_id)
+            .eq("tenant_id", tenant_id)
+            .limit(1)
+            .execute()
+        )
+        submission = ensure_response(submission_res)
+        if not submission:
+            raise HTTPException(404, "Submission not found")
+
+        submission_data = submission if isinstance(submission, dict) else submission[0]
+
+        # VALIDATE: Check that at least one file has been uploaded
+        attachments = submission_data.get("attachments", []) or []
+        if not attachments or len(attachments) == 0:
+            raise HTTPException(
+                400,
+                "Cannot submit: Please upload required documents before submitting. At least one file is required."
+            )
+
+        # Update submission status to 'submitted'
+        now = datetime.now(timezone.utc).isoformat()
+        update_res = (
+            supabase.table("frm32_submissions")
+            .update({
+                "status": "submitted",
+                "submitted_at": now,
+                "updated_at": now
+            })
+            .eq("id", submission_id)
+            .eq("tenant_id", tenant_id)
+            .execute()
+        )
+        ensure_response(update_res)
+
+        # Get contractor info for email
+        contractor_id = submission_data.get("contractor_id")
+        if contractor_id:
+            contractor_res = (
+                supabase.table("contractors")
+                .select("*")
+                .eq("id", contractor_id)
+                .limit(1)
+                .execute()
+            )
+            contractor = ensure_response(contractor_res)
+            if contractor and isinstance(contractor, list):
+                contractor = contractor[0]
+
+            if contractor:
+                # Send supervisor notification in background
+                background_tasks.add_task(
+                    _notify_supervisor_submission,
+                    submission_data,
+                    contractor
+                )
+
+        return {
+            "success": True,
+            "message": "FRM32 submission completed successfully!",
+            "submission_id": submission_id,
+            "status": "submitted",
+            "submitted_at": now
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[submit_submission] Error: {str(e)}")
+        raise HTTPException(500, f"Failed to submit: {str(e)}")
+
+
+async def _notify_supervisor_submission(
+    submission: Dict[str, Any],
+    contractor: Dict[str, Any]
+):
+    """
+    Background task: Send supervisor notification when submission is completed
+    """
+    try:
+        print(f"[supervisor_notification] FRM32 submitted for contractor: {contractor.get('name')}")
+        # TODO: Implement email sending to supervisor(s)
+        # EmailService.send_email(
+        #     to_email=supervisor_email,
+        #     subject=f"FRM32 Submission: {contractor['name']}",
+        #     text_body=...,
+        #     html_body=...
+        # )
+    except Exception as e:
+        print(f"[supervisor_notification] Error: {e}")
