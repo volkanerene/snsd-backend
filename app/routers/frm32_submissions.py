@@ -709,6 +709,7 @@ async def get_submission_k2_scores(
 
     # Get AI suggestions from submission JSON
     ai_suggestions = submission.get("ai_suggestions") or {}
+    print(f"[K2 Scores] DEBUG: ai_suggestions from submission: {type(ai_suggestions)}, keys: {list(ai_suggestions.keys()) if ai_suggestions else 'empty'}")
 
     metrics = _fetch_k2_metrics()
     scores_res = (
