@@ -1,11 +1,13 @@
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, UploadFile, File, BackgroundTasks
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
+import asyncio
 
 from app.db.supabase_client import supabase
 from app.routers.deps import ensure_response, require_tenant
 from app.utils.auth import get_current_user
 from app.services.email_service import EmailService, render_html_from_text
+from app.services.frm32_ai_service import generate_ai_score_suggestions
 from app.config import settings
 
 router = APIRouter()
@@ -435,6 +437,14 @@ async def submit_submission(
                     contractor
                 )
 
+                # Generate AI score suggestions in background
+                background_tasks.add_task(
+                    _generate_and_save_ai_suggestions,
+                    submission_id,
+                    submission_data,
+                    contractor
+                )
+
         return {
             "success": True,
             "message": "FRM32 submission completed successfully!",
@@ -448,6 +458,82 @@ async def submit_submission(
     except Exception as e:
         print(f"[submit_submission] Error: {str(e)}")
         raise HTTPException(500, f"Failed to submit: {str(e)}")
+
+
+def _generate_and_save_ai_suggestions(
+    submission_id: str,
+    submission: Dict[str, Any],
+    contractor: Dict[str, Any]
+):
+    """
+    Background task: Generate AI score suggestions using ChatGPT and save to database
+    """
+    try:
+        print(f"[AI Scoring] Starting AI suggestion generation for submission {submission_id}")
+
+        # Fetch K2 metrics from database
+        k2_metrics_res = (
+            supabase.table("frm32_k2_metrics")
+            .select("k2_code, scope_en, comment_0_en, comment_3_en, comment_6_en, comment_10_en")
+            .execute()
+        )
+        k2_metrics = ensure_response(k2_metrics_res) or []
+
+        if not k2_metrics:
+            print(f"[AI Scoring] No K2 metrics found in database")
+            return
+
+        # Get answers
+        answers = submission.get("answers", {})
+        if not answers:
+            print(f"[AI Scoring] No answers found in submission")
+            return
+
+        contractor_name = contractor.get("name") or contractor.get("legal_name") or "Unknown Contractor"
+
+        # Call ChatGPT synchronously (in background task)
+        ai_result = asyncio.run(generate_ai_score_suggestions(k2_metrics, answers, contractor_name))
+
+        if not ai_result["success"]:
+            print(f"[AI Scoring] Failed to generate suggestions: {ai_result['error']}")
+            return
+
+        suggestions = ai_result.get("suggestions", [])
+        if not suggestions:
+            print(f"[AI Scoring] No suggestions generated")
+            return
+
+        # Save AI suggestions to database
+        for suggestion in suggestions:
+            k2_code = suggestion.get("k2_code")
+            suggested_score = suggestion.get("suggested_score")
+            reasoning = suggestion.get("reasoning")
+
+            try:
+                # Upsert the AI suggestion (update existing score if present)
+                result = (
+                    supabase.table("frm32_submission_scores")
+                    .upsert({
+                        "submission_id": submission_id,
+                        "k2_code": k2_code,
+                        "score": 0,  # Default score for new records (will be updated when supervisor assigns actual score)
+                        "ai_suggested_score": suggested_score,
+                        "ai_reasoning": reasoning,
+                        "ai_generated_at": datetime.now(timezone.utc).isoformat()
+                    }, on_conflict="submission_id,k2_code")
+                    .execute()
+                )
+                print(f"[AI Scoring] Saved suggestion for {k2_code}: score={suggested_score}")
+
+            except Exception as e:
+                print(f"[AI Scoring] Error saving suggestion for {k2_code}: {str(e)}")
+                continue
+
+        print(f"[AI Scoring] ✅ Successfully saved {len(suggestions)} AI suggestions for submission {submission_id}")
+
+    except Exception as e:
+        print(f"[AI Scoring] Error: {str(e)}")
+        # Don't raise - this is a background task, failure shouldn't affect submission
 
 
 def _notify_supervisor_submission(
@@ -624,7 +710,7 @@ async def get_submission_k2_scores(
     metrics = _fetch_k2_metrics()
     scores_res = (
         supabase.table("frm32_submission_scores")
-        .select("k2_code, score, comment_en, comment_tr")
+        .select("k2_code, score, comment_en, comment_tr, ai_suggested_score, ai_reasoning")
         .eq("submission_id", submission_id)
         .execute()
     )
@@ -661,6 +747,8 @@ async def get_submission_k2_scores(
                 "score": current["score"] if current else None,
                 "selected_comment_en": current["comment_en"] if current else None,
                 "selected_comment_tr": current["comment_tr"] if current else None,
+                "ai_suggested_score": current["ai_suggested_score"] if current else None,
+                "ai_reasoning": current["ai_reasoning"] if current else None,
             }
         )
 
@@ -735,3 +823,167 @@ async def update_submission_k2_scores(
     updated_scores = await get_submission_k2_scores(submission_id, user, tenant_id)
     updated_scores["final_score"] = final_score
     return updated_scores
+
+
+@router.post("/submissions/{submission_id}/apply-scores")
+async def apply_n8n_scores(
+    submission_id: str,
+    payload: dict = Body(...),
+    tenant_id: str = Query(...),
+):
+    """
+    Callback endpoint: N8N sends AI-generated scores here
+    This endpoint is called by N8N workflow after AI analysis completes
+
+    Expected payload:
+    {
+      "scores": [
+        {
+          "k2_code": "K2.1",
+          "score": 10,
+          "comment_en": "Excellent...",
+          "comment_tr": "Mükemmel..."
+        }
+      ]
+    }
+    """
+    try:
+        raw_scores = payload.get("scores", [])
+        if not raw_scores:
+            raise HTTPException(400, "No scores provided")
+
+        # Verify submission exists and belongs to tenant
+        submission_res = (
+            supabase.table("frm32_submissions")
+            .select("id, status")
+            .eq("id", submission_id)
+            .eq("tenant_id", tenant_id)
+            .limit(1)
+            .execute()
+        )
+        submission = ensure_response(submission_res)
+        if not submission:
+            raise HTTPException(404, "Submission not found")
+
+        # Prepare score records
+        score_payload = []
+        for item in raw_scores:
+            code = item.get("k2_code")
+            score_value = item.get("score")
+
+            if not code:
+                raise HTTPException(400, "k2_code missing in scores payload")
+
+            if score_value not in (0, 3, 6, 10):
+                raise HTTPException(400, f"Invalid score for {code}: {score_value}. Allowed: 0,3,6,10")
+
+            score_payload.append({
+                "submission_id": submission_id,
+                "k2_code": code,
+                "score": score_value,
+                "comment_en": item.get("comment_en", ""),
+                "comment_tr": item.get("comment_tr", ""),
+            })
+
+        # Upsert all scores at once
+        if score_payload:
+            supabase.table("frm32_submission_scores").upsert(
+                score_payload,
+                on_conflict="submission_id,k2_code"
+            ).execute()
+
+        # Recalculate final score
+        final_score = _recalculate_final_score(submission_id, tenant_id)
+
+        # Mark submission as reviewed
+        now = datetime.now(timezone.utc).isoformat()
+        supabase.table("frm32_submissions").update({
+            "status": "reviewed",
+            "reviewed_at": now
+        }).eq("id", submission_id).eq("tenant_id", tenant_id).execute()
+
+        print(f"[N8N Callback] Applied {len(score_payload)} scores for submission {submission_id}, final score: {final_score}")
+
+        return {
+            "success": True,
+            "submission_id": submission_id,
+            "final_score": final_score,
+            "scores_applied": len(score_payload),
+            "status": "reviewed"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[apply_n8n_scores] Error: {str(e)}")
+        raise HTTPException(500, f"Failed to apply N8N scores: {str(e)}")
+
+
+@router.post("/submissions/{submission_id}/regenerate-ai-suggestions")
+async def regenerate_ai_suggestions(
+    submission_id: str,
+    user=Depends(get_current_user),
+    tenant_id: str = Depends(require_tenant),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+):
+    """
+    Regenerate AI score suggestions for a specific submission
+    Can be called by supervisors to re-run AI analysis on existing submissions
+    """
+    try:
+        _require_supervisor_role(user)
+
+        # Fetch submission
+        submission_res = (
+            supabase.table("frm32_submissions")
+            .select("*")
+            .eq("id", submission_id)
+            .eq("tenant_id", tenant_id)
+            .limit(1)
+            .execute()
+        )
+        submission = ensure_response(submission_res)
+        if not submission:
+            raise HTTPException(404, "Submission not found")
+
+        submission_data = submission if isinstance(submission, dict) else submission[0]
+        answers = submission_data.get("answers") or {}
+
+        if not answers:
+            raise HTTPException(400, "Submission has no answers to analyze")
+
+        # Get contractor info
+        contractor_res = (
+            supabase.table("contractors")
+            .select("*")
+            .eq("id", submission_data.get("contractor_id"))
+            .limit(1)
+            .execute()
+        )
+        contractor = ensure_response(contractor_res)
+        if not contractor:
+            contractor = {}
+        if isinstance(contractor, list):
+            contractor = contractor[0]
+
+        # Generate AI suggestions in background
+        background_tasks.add_task(
+            _generate_and_save_ai_suggestions,
+            submission_id,
+            submission_data,
+            contractor
+        )
+
+        print(f"[Regenerate AI] Queued AI suggestion regeneration for submission {submission_id}")
+
+        return {
+            "success": True,
+            "message": "AI suggestion regeneration started. This may take a few moments.",
+            "submission_id": submission_id
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[regenerate_ai_suggestions] Error: {str(e)}")
+        raise HTTPException(500, f"Failed to regenerate AI suggestions: {str(e)}")
