@@ -6,7 +6,7 @@
 
 CREATE TABLE IF NOT EXISTS incident_report_dialogues (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
   title VARCHAR(255) NOT NULL,
   what_happened TEXT NOT NULL,
   why_did_it_happen TEXT NOT NULL,
@@ -33,10 +33,13 @@ CREATE INDEX IF NOT EXISTS idx_incident_dialogues_department
 -- RLS Policy: Users can only see incidents from their tenant
 ALTER TABLE incident_report_dialogues ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "Tenants can view their own incident dialogues"
+CREATE POLICY "Users can view their tenant incidents and global templates"
   ON incident_report_dialogues
   FOR SELECT
-  USING (tenant_id = (auth.jwt() ->> 'tenant_id')::uuid);
+  USING (
+    is_template AND tenant_id IS NULL
+    OR tenant_id = (auth.jwt() ->> 'tenant_id')::uuid
+  );
 
 CREATE POLICY "Only admins can insert incident dialogues"
   ON incident_report_dialogues
