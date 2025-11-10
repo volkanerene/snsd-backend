@@ -319,17 +319,28 @@ def _find_similar_incident(
 ) -> Optional[Dict[str, Any]]:
     """
     Find the most similar incident from database using semantic similarity.
+    Searches both tenant-specific incidents and global templates.
     For now, using simple keyword matching. Can be enhanced with embeddings later.
     """
     try:
         from app.db.supabase_client import supabase
 
-        # Get all incidents for tenant
-        res = supabase.table("incident_report_dialogues").select(
+        # Get incidents for tenant + global templates
+        # First get tenant-specific incidents
+        res_tenant = supabase.table("incident_report_dialogues").select(
             "id, title, what_happened, why_did_it_happen, what_did_they_learn"
         ).eq("tenant_id", tenant_id).execute()
 
-        incidents = res.data if hasattr(res, 'data') else []
+        # Then get global template incidents (is_template=true, tenant_id=NULL)
+        res_templates = supabase.table("incident_report_dialogues").select(
+            "id, title, what_happened, why_did_it_happen, what_did_they_learn"
+        ).eq("is_template", True).is_("tenant_id", "null").execute()
+
+        incidents = []
+        if hasattr(res_tenant, 'data') and res_tenant.data:
+            incidents.extend(res_tenant.data)
+        if hasattr(res_templates, 'data') and res_templates.data:
+            incidents.extend(res_templates.data)
 
         if not incidents:
             return None
