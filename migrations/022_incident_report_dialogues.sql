@@ -36,13 +36,13 @@ ALTER TABLE incident_report_dialogues ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Tenants can view their own incident dialogues"
   ON incident_report_dialogues
   FOR SELECT
-  USING (tenant_id = auth.jwt() ->> 'tenant_id');
+  USING (tenant_id = (auth.jwt() ->> 'tenant_id')::uuid);
 
 CREATE POLICY "Only admins can insert incident dialogues"
   ON incident_report_dialogues
   FOR INSERT
   WITH CHECK (
-    tenant_id = auth.jwt() ->> 'tenant_id' AND
+    tenant_id = (auth.jwt() ->> 'tenant_id')::uuid AND
     EXISTS (
       SELECT 1 FROM profiles
       WHERE id = auth.uid()
@@ -55,7 +55,7 @@ CREATE POLICY "Only admins can update incident dialogues"
   ON incident_report_dialogues
   FOR UPDATE
   USING (
-    tenant_id = auth.jwt() ->> 'tenant_id' AND
+    tenant_id = (auth.jwt() ->> 'tenant_id')::uuid AND
     EXISTS (
       SELECT 1 FROM profiles
       WHERE id = auth.uid()
