@@ -978,3 +978,112 @@ async def get_incident_report(
         raise HTTPException(404, "Incident report not found")
 
     return data[0]
+
+
+# =========================================================================
+# Script Generation Endpoints
+# =========================================================================
+
+class GenerateScriptRequest(BaseModel):
+    prompt: str
+    context: Optional[str] = None
+    max_tokens: Optional[int] = None
+    temperature: Optional[float] = None
+
+
+class GenerateIncidentScriptRequest(BaseModel):
+    what_happened: str
+    why_did_it_happen: Optional[str] = None
+    what_did_they_learn: Optional[str] = None
+    ask_yourself_or_crew: Optional[str] = None
+
+
+@router.post("/scripts/generate")
+async def generate_script_from_topic(
+    payload: GenerateScriptRequest,
+    user=Depends(get_current_user),
+):
+    """Generate a video script from an educational topic"""
+    require_permission(user, "modules.access_marcel_gpt")
+
+    from app.services.script_generation_service import generate_script_from_topic
+
+    result = await generate_script_from_topic(payload.prompt)
+
+    if not result.get("success"):
+        raise HTTPException(500, result.get("error", "Failed to generate script"))
+
+    return result
+
+
+@router.post("/scripts/from-pdf")
+async def generate_script_from_pdf(
+    file: UploadFile = File(...),
+    user=Depends(get_current_user),
+):
+    """Generate a video script from a PDF file"""
+    require_permission(user, "modules.access_marcel_gpt")
+
+    from app.services.script_generation_service import (
+        generate_script_from_pdf,
+        _extract_text_from_pdf
+    )
+
+    try:
+        # Read PDF file
+        pdf_bytes = await file.read()
+
+        if not pdf_bytes:
+            raise HTTPException(400, "PDF file is empty")
+
+        # Extract text from PDF
+        pdf_text = _extract_text_from_pdf(pdf_bytes)
+
+        if not pdf_text.strip():
+            raise HTTPException(400, "Could not extract text from PDF")
+
+        # Generate script
+        result = await generate_script_from_pdf(pdf_text)
+
+        if not result.get("success"):
+            raise HTTPException(500, result.get("error", "Failed to generate script from PDF"))
+
+        return {**result, "filename": file.filename}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[PDF Script Gen] Error: {str(e)}")
+        raise HTTPException(500, f"Error processing PDF: {str(e)}")
+
+
+@router.post("/scripts/from-incident")
+async def generate_script_from_incident(
+    payload: GenerateIncidentScriptRequest,
+    user=Depends(get_current_user),
+):
+    """
+    Generate a video script from incident details.
+    AI will find similar incidents in database and use them for context.
+    """
+    require_permission(user, "modules.access_marcel_gpt")
+
+    tenant_id = user.get("tenant_id")
+
+    if not tenant_id:
+        raise HTTPException(400, "User not assigned to a tenant")
+
+    from app.services.script_generation_service import generate_script_from_incident
+
+    result = await generate_script_from_incident(
+        what_happened=payload.what_happened,
+        why_did_it_happen=payload.why_did_it_happen,
+        what_did_they_learn=payload.what_did_they_learn,
+        ask_yourself_or_crew=payload.ask_yourself_or_crew,
+        tenant_id=tenant_id
+    )
+
+    if not result.get("success"):
+        raise HTTPException(500, result.get("error", "Failed to generate script"))
+
+    return result
