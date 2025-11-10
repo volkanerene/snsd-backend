@@ -114,6 +114,8 @@ async def list_voices(
     force_refresh: bool = Query(False, description="Force refresh cache"),
     language: Optional[str] = Query(None, description="Filter by language"),
     gender: Optional[str] = Query(None, description="Filter by gender"),
+    limit: int = Query(50, ge=1, le=100, description="Number of voices to return"),
+    offset: int = Query(0, ge=0, description="Pagination offset"),
 ):
     """
     List available HeyGen voices with optional filters
@@ -139,7 +141,11 @@ async def list_voices(
         if gender:
             voices = [v for v in voices if v.get("gender") == gender]
 
-        return {"voices": voices, "count": len(voices)}
+        # Apply pagination
+        total = len(voices)
+        voices = voices[offset:offset + limit]
+
+        return {"voices": voices, "count": len(voices), "total": total, "offset": offset, "limit": limit}
     except Exception as e:
         raise HTTPException(500, f"Failed to fetch voices: {str(e)}")
 
@@ -231,8 +237,10 @@ async def list_presets(
 
 @router.get("/photo-avatars/looks")
 async def list_photo_avatar_looks(
-    force_refresh: bool = False,
     user=Depends(get_current_user),
+    force_refresh: bool = Query(False, description="Force refresh cache"),
+    limit: int = Query(50, ge=1, le=100, description="Number of looks to return"),
+    offset: int = Query(0, ge=0, description="Pagination offset"),
 ):
     """List photo avatar looks for the current tenant"""
     import sys
@@ -255,12 +263,19 @@ async def list_photo_avatar_looks(
     if serialized_looks:
         print(f"[MarcelGPT] First look: id={serialized_looks[0].get('id')}, name={serialized_looks[0].get('name')}, avatarId={serialized_looks[0].get('avatarId')}", file=sys.stderr, flush=True)
 
+    # Apply pagination
+    total = len(serialized_looks)
+    paginated_looks = serialized_looks[offset:offset + limit]
+
     response = {
-        "looks": serialized_looks,
-        "count": len(serialized_looks)
+        "looks": paginated_looks,
+        "count": len(paginated_looks),
+        "total": total,
+        "offset": offset,
+        "limit": limit
     }
 
-    print(f"[MarcelGPT] Returning response with {response['count']} looks\n", file=sys.stderr, flush=True)
+    print(f"[MarcelGPT] Returning response with {response['count']} looks (total: {total})\n", file=sys.stderr, flush=True)
 
     return response
 
@@ -460,8 +475,12 @@ async def generate_video(
     # Validate required fields
     if not payload.get("input_text"):
         raise HTTPException(400, "input_text is required")
-    if not payload.get("avatar_id"):
-        raise HTTPException(400, "avatar_id is required")
+
+    # Accept either avatar_id (standard avatars) or image_key (photo avatars)
+    avatar_id = payload.get("avatar_id") or payload.get("image_key")
+    if not avatar_id:
+        raise HTTPException(400, "avatar_id or image_key is required")
+
     if not payload.get("voice_id"):
         raise HTTPException(400, "voice_id is required")
 
@@ -500,22 +519,29 @@ async def generate_video(
         # Call HeyGen API based on engine
         config = payload.get("config", {})
 
+        # Prepare HeyGen kwargs
+        heygen_kwargs = dict(config)
+
+        # For AV4 engine with photo avatars, pass image_key
+        if engine == "av4" and payload.get("image_key"):
+            heygen_kwargs["image_key"] = payload["image_key"]
+
         if engine == "v2":
             heygen_response = await heygen.create_video_v2(
                 input_text=payload["input_text"],
-                avatar_id=payload["avatar_id"],
+                avatar_id=avatar_id,
                 voice_id=payload["voice_id"],
                 callback_url=full_callback_url,
                 title=payload.get("title"),
-                **config
+                **heygen_kwargs
             )
         elif engine == "av4":
             heygen_response = await heygen.create_video_av4(
                 input_text=payload["input_text"],
-                avatar_id=payload["avatar_id"],
+                avatar_id=avatar_id,
                 voice_id=payload["voice_id"],
                 callback_url=full_callback_url,
-                **config
+                **heygen_kwargs
             )
         else:
             raise HTTPException(400, "Template engine not yet implemented")

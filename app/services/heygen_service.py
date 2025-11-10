@@ -424,32 +424,40 @@ class HeyGenService:
         Create video using AV4 API (photorealistic avatars)
 
         Args:
-            input_text: Text for avatar to speak
-            avatar_id: Avatar ID (must be AV4 compatible)
+            input_text: Text for avatar to speak (script parameter)
+            avatar_id: Avatar ID (must be AV4 compatible) or image_key for photo avatars
             voice_id: Voice ID from catalog
             callback_url: Webhook URL for completion
-            **kwargs: Additional parameters
+            **kwargs: Additional parameters (image_key for photo avatars, etc.)
 
         Returns:
             Job response with video_id
         """
+        # AV4 API expects "script" as the text parameter
         payload = {
-            "video_inputs": [{
-                "character": {
-                    "type": "avatar",
-                    "avatar_id": avatar_id,
-                    "avatar_style": "normal"
-                },
-                "voice": {
-                    "type": "text",
-                    "input_text": input_text,
-                    "voice_id": voice_id
-                }
-            }]
+            "script": input_text,
+            "voice_id": voice_id
         }
 
+        # For photo avatars, use image_key parameter; for standard avatars use avatar_id
+        # If image_key is explicitly provided in kwargs, use it; otherwise use avatar_id
+        if kwargs.get("image_key"):
+            payload["image_key"] = kwargs["image_key"]
+        else:
+            # Try avatar_id first, but also check if it should be image_key
+            # Photo avatar IDs often have specific patterns, but to be safe, try with image_key as fallback
+            payload["avatar_id"] = avatar_id
+
+        # Add optional parameters from kwargs
+        if kwargs.get("width"):
+            payload["width"] = kwargs["width"]
+        if kwargs.get("height"):
+            payload["height"] = kwargs["height"]
+        if kwargs.get("speed"):
+            payload["speed"] = kwargs["speed"]
+
         if callback_url:
-            payload["callback_id"] = callback_url
+            payload["webhook_url"] = callback_url
 
         response = await self._make_request("POST", "/v2/video/av4/generate", data=payload)
         return response

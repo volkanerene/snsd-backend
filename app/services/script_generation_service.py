@@ -88,38 +88,33 @@ def _build_incident_script_prompt(
 ) -> str:
     """Build prompt for incident-based script generation"""
 
-    incident_context = ""
+    similar_incident_text = ""
     if similar_incident:
-        incident_context = f"""
-Based on a similar incident in our safety database:
+        similar_incident_text = f"""
+
+Here's a similar incident from our database for context:
+{similar_incident.get('title', 'Similar Incident')}
 - What happened: {similar_incident.get('what_happened', '')}
 - Why it happened: {similar_incident.get('why_did_it_happen', '')}
-- Lessons learned: {similar_incident.get('what_did_they_learn', '')}
+- What we learned: {similar_incident.get('what_did_they_learn', '')}"""
 
-"""
+    return f"""You are a safety training speaker creating a brief safety conversation script based on a real incident in our company.
 
-    return f"""You are a safety training expert creating an impactful safety training video
-script based on a real incident.
-
-INCIDENT DETAILS:
+NEW INCIDENT DETAILS:
 What happened: {what_happened}
-Why it happened: {why_did_it_happen or 'Not provided'}
-Lessons learned: {what_did_they_learn or 'Not provided'}
-Reflection questions: {ask_yourself_or_crew or 'Not provided'}
+Why it happened: {why_did_it_happen or 'N/A'}
+What we can learn: {what_did_they_learn or 'N/A'}{similar_incident_text}
 
-{incident_context}
+Create a natural spoken conversation (NOT a video script with scenes, music, or stage directions).
+Start with: "My team, I want to share something important. We recently had an incident at our company, and I'd like to tell you about a similar situation that happened before..."
 
-Create a safety training script that:
-1. Opens with the incident scenario to capture attention
-2. Walks through what went wrong and why
-3. Highlights the key lessons learned
-4. Includes discussion questions for the crew
-5. Emphasizes prevention and best practices
+Then:
+1. Briefly describe the similar incident from our database
+2. Explain what caused it and what we learned
+3. Connect it to the current situation
 
-Write in a serious but supportive tone. This is for safety awareness and learning, not blame.
-Make it 2-3 minutes of speaking time.
-
-Write ONLY the script content."""
+Keep it natural, conversational, and sincere. Maximum 1500 characters. No scene descriptions, no stage directions, no reflection questions.
+Write ONLY the spoken dialogue - nothing else."""
 
 
 async def generate_script_from_topic(topic: str) -> Dict[str, Any]:
@@ -232,6 +227,79 @@ async def generate_script_from_pdf(pdf_content: str) -> Dict[str, Any]:
         }
 
 
+def _generate_training_questions(
+    what_happened: str,
+    why_did_it_happen: Optional[str],
+    what_did_they_learn: Optional[str]
+) -> Dict[str, Any]:
+    """Generate 3 training questions: 2 multiple choice, 1 text-based"""
+    try:
+        if OpenAI is None or not settings.OPENAI_API_KEY:
+            return {"success": False, "questions": []}
+
+        client = OpenAI(api_key=settings.OPENAI_API_KEY)
+
+        prompt = f"""Based on this incident, generate exactly 3 training questions.
+
+INCIDENT:
+What happened: {what_happened}
+Why it happened: {why_did_it_happen or 'N/A'}
+What we learned: {what_did_they_learn or 'N/A'}
+
+Generate exactly this JSON format (no markdown, pure JSON):
+{{
+  "questions": [
+    {{
+      "type": "multiple_choice",
+      "question": "question text here?",
+      "options": ["option A", "option B", "option C", "option D"],
+      "correct_answer": 0
+    }},
+    {{
+      "type": "multiple_choice",
+      "question": "another question?",
+      "options": ["option A", "option B", "option C", "option D"],
+      "correct_answer": 1
+    }},
+    {{
+      "type": "text",
+      "question": "What would you do differently in this situation?"
+    }}
+  ]
+}}
+
+Keep questions professional and related to the incident. Make them assessment-focused."""
+
+        response = client.chat.completions.create(
+            model="gpt-4-turbo",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a training assessment expert. Generate only valid JSON with no additional text."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            temperature=0.7,
+            max_tokens=800
+        )
+
+        response_text = response.choices[0].message.content.strip()
+
+        # Parse JSON response
+        questions_data = json.loads(response_text)
+        return {
+            "success": True,
+            "questions": questions_data.get("questions", [])
+        }
+
+    except Exception as e:
+        print(f"[Training Questions] Error: {str(e)}")
+        return {"success": False, "questions": []}
+
+
 async def generate_script_from_incident(
     what_happened: str,
     why_did_it_happen: Optional[str] = None,
@@ -282,7 +350,7 @@ async def generate_script_from_incident(
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a safety training expert creating impactful safety training scripts."
+                    "content": "You are a safety training speaker. Create natural, conversational dialogue only - no scene descriptions, no stage directions, no visual cues."
                 },
                 {
                     "role": "user",
@@ -290,15 +358,23 @@ async def generate_script_from_incident(
                 }
             ],
             temperature=0.7,
-            max_tokens=2000
+            max_tokens=500
         )
 
         script = response.choices[0].message.content.strip()
+
+        # Generate training questions
+        questions_result = _generate_training_questions(
+            what_happened,
+            why_did_it_happen,
+            what_did_they_learn
+        )
 
         return {
             "success": True,
             "script": script,
             "source": "incident",
+            "questions": questions_result.get("questions", []),
             "similar_incident_id": similar_incident.get("id") if similar_incident else None,
             "generated_at": str(__import__('datetime').datetime.now(
                 __import__('datetime').timezone.utc
