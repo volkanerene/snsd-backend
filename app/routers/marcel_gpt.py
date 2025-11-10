@@ -204,6 +204,115 @@ async def list_avatar_groups(
         raise HTTPException(500, f"Failed to fetch avatar groups: {str(e)}")
 
 
+@router.get("/avatar-groups-v2")
+async def list_avatar_groups_v2(
+    include_avatars: bool = Query(False, description="Include avatars for each group"),
+    user=Depends(get_current_user),
+):
+    """
+    List virtual avatar groups based on fetched avatars from HeyGen
+    Groups avatars by their base name (Adrian, Abigail, etc.)
+    This bypasses the avatar_group.list API which has auth issues
+    """
+    require_permission(user, "marcel_gpt.access")
+
+    tenant_id = user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(400, "User not assigned to a tenant")
+
+    heygen = get_heygen_service(tenant_id)
+    if not heygen:
+        raise HTTPException(400, "HeyGen API key not configured for this tenant")
+
+    try:
+        # Fetch all avatars from HeyGen
+        all_avatars = await heygen.list_avatars()
+
+        # Group avatars by base name (first word of avatar_name)
+        groups_dict: Dict[str, Dict[str, Any]] = {}
+
+        for avatar in all_avatars:
+            avatar_name = avatar.get("avatar_name", "Unknown")
+            avatar_id = avatar.get("avatar_id", "")
+
+            # Extract base name (first word)
+            base_name = avatar_name.split()[0] if avatar_name else "Unknown"
+
+            # Create group if not exists
+            if base_name not in groups_dict:
+                groups_dict[base_name] = {
+                    "id": base_name.lower(),
+                    "name": base_name,
+                    "avatars": [],
+                    "preview_image": avatar.get("preview_image_url"),
+                    "num_looks": 0
+                }
+
+            # Add avatar to group
+            groups_dict[base_name]["avatars"].append(avatar)
+            groups_dict[base_name]["num_looks"] += 1
+
+        # Convert to list and sort by name
+        groups = sorted(
+            groups_dict.values(),
+            key=lambda g: g["name"]
+        )
+
+        # Filter to only return previews if not including avatars
+        if not include_avatars:
+            for group in groups:
+                group.pop("avatars", None)
+
+        return {"groups": groups, "count": len(groups)}
+    except Exception as e:
+        import sys
+        print(f"[MarcelGPT] Error in list_avatar_groups_v2: {str(e)}", file=sys.stderr, flush=True)
+        raise HTTPException(500, f"Failed to fetch avatar groups: {str(e)}")
+
+
+@router.get("/avatar-groups/{group_id}/avatars")
+async def get_custom_group_avatars(
+    group_id: str,
+    user=Depends(get_current_user),
+):
+    """
+    Fetch avatars from a specific custom avatar group by ID
+
+    This endpoint allows direct access to custom HeyGen avatar groups like Marcel
+    by their group ID. Returns all avatars in the group with full details.
+
+    Example: /avatar-groups/4280ce1878e74185bdb8471aaa3e13cc/avatars
+    """
+    require_permission(user, "marcel_gpt.access")
+
+    tenant_id = user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(400, "User not assigned to a tenant")
+
+    heygen = get_heygen_service(tenant_id)
+    if not heygen:
+        raise HTTPException(400, "HeyGen API key not configured for this tenant")
+
+    try:
+        import sys
+        print(f"[MarcelGPT] Fetching avatars for custom group: {group_id}", file=sys.stderr, flush=True)
+
+        # Fetch avatars from the specific group
+        avatars = await heygen.list_avatars_in_group(group_id)
+
+        print(f"[MarcelGPT] Retrieved {len(avatars)} avatars from group {group_id}", file=sys.stderr, flush=True)
+
+        return {
+            "avatars": avatars,
+            "count": len(avatars),
+            "group_id": group_id
+        }
+    except Exception as e:
+        import sys
+        print(f"[MarcelGPT] Error fetching avatars from group {group_id}: {str(e)}", file=sys.stderr, flush=True)
+        raise HTTPException(500, f"Failed to fetch avatars from group: {str(e)}")
+
+
 # =========================================================================
 # Brand Preset Endpoints
 # =========================================================================
