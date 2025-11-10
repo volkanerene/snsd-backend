@@ -695,7 +695,7 @@ async def get_submission_k2_scores(
 ):
     submission_res = (
         supabase.table("frm32_submissions")
-        .select("id, final_score")
+        .select("id, final_score, ai_suggestions")
         .eq("id", submission_id)
         .eq("tenant_id", tenant_id)
         .limit(1)
