@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS incident_report_dialogues (
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+-- Make tenant_id nullable for global templates (if table already exists with NOT NULL constraint)
+ALTER TABLE incident_report_dialogues ALTER COLUMN tenant_id DROP NOT NULL;
+
 -- Create indexes for faster queries
 CREATE INDEX IF NOT EXISTS idx_incident_dialogues_tenant
     ON incident_report_dialogues(tenant_id);
