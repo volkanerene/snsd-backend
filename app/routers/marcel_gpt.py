@@ -5,12 +5,13 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, UploadFile, File
+from httpx import HTTPStatusError
 from pydantic import BaseModel, Field
 
 from app.db.supabase_client import supabase
 from app.routers.deps import ensure_response
 from app.utils.auth import get_current_user, require_permission
-from app.services.heygen_service import get_heygen_service
+from app.services.heygen_service import get_heygen_service, get_fallback_heygen_service
 from app.services.photo_avatar_service import PhotoAvatarService
 
 router = APIRouter()
@@ -297,16 +298,33 @@ async def get_custom_group_avatars(
         import sys
         print(f"[MarcelGPT] Fetching avatars for custom group: {group_id}", file=sys.stderr, flush=True)
 
-        # Fetch avatars from the specific group
-        avatars = await heygen.list_avatars_in_group(group_id)
+        fallback_used = False
 
-        print(f"[MarcelGPT] Retrieved {len(avatars)} avatars from group {group_id}", file=sys.stderr, flush=True)
+        try:
+            avatars = await heygen.list_avatars_in_group(group_id)
+        except HTTPStatusError as http_error:
+            status = http_error.response.status_code if http_error.response else None
+            print(f"[MarcelGPT] Primary HeyGen request failed for group {group_id} with status {status}", file=sys.stderr, flush=True)
+            if status in {401, 403}:
+                fallback_service = get_fallback_heygen_service()
+                if not fallback_service:
+                    raise HTTPException(502, "HeyGen denied access to this avatar group and no fallback API key is configured")
+                print(f"[MarcelGPT] Retrying custom group {group_id} with fallback HeyGen API key", file=sys.stderr, flush=True)
+                avatars = await fallback_service.list_avatars_in_group(group_id)
+                fallback_used = True
+            else:
+                raise
+
+        print(f"[MarcelGPT] Retrieved {len(avatars)} avatars from group {group_id} (fallback={fallback_used})", file=sys.stderr, flush=True)
 
         return {
             "avatars": avatars,
             "count": len(avatars),
-            "group_id": group_id
+            "group_id": group_id,
+            "debug": {"usedFallbackApiKey": fallback_used}
         }
+    except HTTPException:
+        raise
     except Exception as e:
         import sys
         print(f"[MarcelGPT] Error fetching avatars from group {group_id}: {str(e)}", file=sys.stderr, flush=True)
@@ -453,6 +471,160 @@ async def refresh_photo_avatar_look(
     service = PhotoAvatarService(str(tenant_id), str(user.get("id")))
     look = await service.refresh_look_status(look_id, auto=False)
     return {"look": serialize_photo_avatar_look(look)}
+
+
+class GeneratePhotoAvatarLookRequest(BaseModel):
+    image_url: str = Field(..., description="URL of avatar image (e.g., preview image from HeyGen)")
+    group_id: str = Field(..., description="Avatar group ID (e.g., Marcel group ID)")
+    prompt: str = Field(..., description="Description of the look to generate")
+    style: str = Field(default="Realistic", description="Style: 'Realistic', 'Pixar', 'Cinematic', 'Vintage', 'Noir', 'Cyberpunk', 'Unspecified'")
+    orientation: str = Field(default="square", description="Orientation: 'square', 'horizontal', 'vertical'")
+    pose: str = Field(default="half_body", description="Pose: 'half_body', 'close_up', 'full_body'")
+
+
+@router.post("/photo-avatars/looks/generate")
+async def generate_photo_avatar_look(
+    payload: GeneratePhotoAvatarLookRequest,
+    user=Depends(get_current_user),
+):
+    """
+    Generate new photo avatar looks using HeyGen's photo avatar generation API
+
+    This endpoint generates 4 new look variations based on the provided image and parameters.
+    Returns generation_id which can be used to track status and retrieve generated image_keys.
+
+    Note: This is an async operation. Use the generation_id to poll the status.
+    """
+    require_permission(user, "marcel_gpt.manage_presets")
+
+    tenant_id = user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(400, "User not assigned to a tenant")
+
+    heygen = get_heygen_service(tenant_id)
+    if not heygen:
+        raise HTTPException(400, "HeyGen API key not configured for this tenant")
+
+    try:
+        import sys
+        print(f"[MarcelGPT] Generating photo avatar looks | group={payload.group_id} | style={payload.style} | orientation={payload.orientation} | pose={payload.pose}", file=sys.stderr, flush=True)
+
+        # Validate style, orientation, and pose values
+        valid_styles = ["Realistic", "Pixar", "Cinematic", "Vintage", "Noir", "Cyberpunk", "Unspecified"]
+        valid_orientations = ["square", "horizontal", "vertical"]
+        valid_poses = ["half_body", "close_up", "full_body"]
+
+        if payload.style not in valid_styles:
+            raise HTTPException(400, f"Invalid style. Must be one of: {', '.join(valid_styles)}")
+        if payload.orientation not in valid_orientations:
+            raise HTTPException(400, f"Invalid orientation. Must be one of: {', '.join(valid_orientations)}")
+        if payload.pose not in valid_poses:
+            raise HTTPException(400, f"Invalid pose. Must be one of: {', '.join(valid_poses)}")
+
+        # Call HeyGen API to generate looks
+        generation_response = await heygen.generate_photo_avatar_looks(
+            image_url=payload.image_url,
+            group_id=payload.group_id,
+            prompt=payload.prompt,
+            style=payload.style,
+            orientation=payload.orientation,
+            pose=payload.pose
+        )
+
+        print(f"[MarcelGPT] Full generation response: {generation_response}", file=sys.stderr, flush=True)
+
+        # Extract data - HeyGen returns response with data wrapper
+        data = generation_response.get("data", generation_response)
+        generation_id = data.get("generation_id")
+
+        print(f"[MarcelGPT] generation_id={generation_id}, status=initiated (async)", file=sys.stderr, flush=True)
+
+        return {
+            "generation_id": generation_id,
+            "status": "processing",
+            "image_keys": [],
+            "message": "Photo avatar generation initiated. Generation ID: " + str(generation_id)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import sys
+        print(f"[MarcelGPT] Error generating photo avatar looks: {str(e)}", file=sys.stderr, flush=True)
+        raise HTTPException(500, f"Failed to generate photo avatar looks: {str(e)}")
+
+
+@router.get("/photo-avatars/generations/{generation_id}")
+async def get_photo_avatar_generation_status(
+    generation_id: str,
+    user=Depends(get_current_user),
+):
+    """
+    Check the status of a photo avatar generation job
+
+    Returns the generation status and image_keys once complete.
+    Status values: 'processing', 'success', 'failed'
+
+    Note: HeyGen uses different status values:
+    - 'in_progress' → we return 'processing'
+    - 'completed' → we return 'success'
+    - 'failed' → we return 'failed'
+    """
+    require_permission(user, "marcel_gpt.manage_presets")
+
+    tenant_id = user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(400, "User not assigned to a tenant")
+
+    heygen = get_heygen_service(tenant_id)
+    if not heygen:
+        raise HTTPException(400, "HeyGen API key not configured for this tenant")
+
+    try:
+        import sys
+        print(f"[MarcelGPT] Checking generation status: {generation_id}", file=sys.stderr, flush=True)
+
+        # Call HeyGen API to get generation status
+        status_response = await heygen.get_photo_avatar_generation(generation_id)
+
+        print(f"[MarcelGPT] Status response: {status_response}", file=sys.stderr, flush=True)
+
+        # Extract data - HeyGen wraps response in "data" key
+        data = status_response.get("data", status_response)
+
+        # Get HeyGen's status and map it to our standard values
+        heygen_status = data.get("status", "unknown")
+        status_map = {
+            "in_progress": "processing",
+            "completed": "success",
+            "failed": "failed"
+        }
+        status = status_map.get(heygen_status, heygen_status)
+
+        # HeyGen returns image_key_list and image_url_list
+        image_key_list = data.get("image_key_list") or []
+        image_url_list = data.get("image_url_list") or []
+
+        # Ensure they're lists
+        if not isinstance(image_key_list, list):
+            image_key_list = []
+        if not isinstance(image_url_list, list):
+            image_url_list = []
+
+        print(f"[MarcelGPT] generation_id={generation_id}, heygen_status={heygen_status}, mapped_status={status}, image_keys_count={len(image_key_list)}", file=sys.stderr, flush=True)
+
+        return {
+            "generation_id": generation_id,
+            "status": status,
+            "image_keys": image_key_list,
+            "image_urls": image_url_list,
+            "message": f"Generation {status} - {len(image_key_list)} images available"
+        }
+
+    except Exception as e:
+        import sys
+        print(f"[MarcelGPT] Error checking generation status: {str(e)}", file=sys.stderr, flush=True)
+        raise HTTPException(500, f"Failed to check generation status: {str(e)}")
 
 
 @router.post("/presets")
