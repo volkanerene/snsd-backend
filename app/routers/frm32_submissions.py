@@ -503,33 +503,33 @@ def _generate_and_save_ai_suggestions(
             print(f"[AI Scoring] No suggestions generated")
             return
 
-        # Save AI suggestions to database
+        # Build AI suggestions JSON object
+        # Format: {"K2.1": {"suggested_score": 10, "reasoning": "..."}, ...}
+        ai_suggestions_json = {}
         for suggestion in suggestions:
             k2_code = suggestion.get("k2_code")
             suggested_score = suggestion.get("suggested_score")
             reasoning = suggestion.get("reasoning")
 
-            try:
-                # Upsert the AI suggestion (update existing score if present)
-                result = (
-                    supabase.table("frm32_submission_scores")
-                    .upsert({
-                        "submission_id": submission_id,
-                        "k2_code": k2_code,
-                        "score": 0,  # Default score for new records (will be updated when supervisor assigns actual score)
-                        "ai_suggested_score": suggested_score,
-                        "ai_reasoning": reasoning,
-                        "ai_generated_at": datetime.now(timezone.utc).isoformat()
-                    }, on_conflict="submission_id,k2_code")
-                    .execute()
-                )
-                print(f"[AI Scoring] Saved suggestion for {k2_code}: score={suggested_score}")
+            ai_suggestions_json[k2_code] = {
+                "suggested_score": suggested_score,
+                "reasoning": reasoning
+            }
 
-            except Exception as e:
-                print(f"[AI Scoring] Error saving suggestion for {k2_code}: {str(e)}")
-                continue
+        # Save AI suggestions to frm32_submissions as JSON
+        try:
+            result = (
+                supabase.table("frm32_submissions")
+                .update({
+                    "ai_suggestions": ai_suggestions_json
+                })
+                .eq("id", submission_id)
+                .execute()
+            )
+            print(f"[AI Scoring] ✅ Successfully saved {len(suggestions)} AI suggestions for submission {submission_id}")
 
-        print(f"[AI Scoring] ✅ Successfully saved {len(suggestions)} AI suggestions for submission {submission_id}")
+        except Exception as e:
+            print(f"[AI Scoring] Error saving AI suggestions: {str(e)}")
 
     except Exception as e:
         print(f"[AI Scoring] Error: {str(e)}")
@@ -707,10 +707,13 @@ async def get_submission_k2_scores(
     if isinstance(submission, list):
         submission = submission[0]
 
+    # Get AI suggestions from submission JSON
+    ai_suggestions = submission.get("ai_suggestions") or {}
+
     metrics = _fetch_k2_metrics()
     scores_res = (
         supabase.table("frm32_submission_scores")
-        .select("k2_code, score, comment_en, comment_tr, ai_suggested_score, ai_reasoning")
+        .select("k2_code, score, comment_en, comment_tr")
         .eq("submission_id", submission_id)
         .execute()
     )
@@ -720,6 +723,9 @@ async def get_submission_k2_scores(
     merged = []
     for metric in metrics:
         current = score_map.get(metric["k2_code"])
+        # Get AI suggestion for this K2 code if it exists
+        ai_suggestion = ai_suggestions.get(metric["k2_code"]) or {}
+
         merged.append(
             {
                 "k2_code": metric["k2_code"],
@@ -747,8 +753,8 @@ async def get_submission_k2_scores(
                 "score": current["score"] if current else None,
                 "selected_comment_en": current["comment_en"] if current else None,
                 "selected_comment_tr": current["comment_tr"] if current else None,
-                "ai_suggested_score": current["ai_suggested_score"] if current else None,
-                "ai_reasoning": current["ai_reasoning"] if current else None,
+                "ai_suggested_score": ai_suggestion.get("suggested_score"),
+                "ai_reasoning": ai_suggestion.get("reasoning"),
             }
         )
 
