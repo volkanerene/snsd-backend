@@ -1,13 +1,15 @@
 """
 MarcelGPT Webhook - HeyGen Callback Handler
 """
-from fastapi import APIRouter, Request, HTTPException, Query
+from fastapi import APIRouter, Request, HTTPException, Query, Depends
 from datetime import datetime
 import hmac
 import hashlib
 
 from app.db.supabase_client import supabase
 from app.routers.deps import ensure_response
+from app.utils.auth import get_current_user, require_permission
+from app.services.heygen_service import get_heygen_service
 
 router = APIRouter()
 
@@ -231,3 +233,117 @@ async def handle_failure(job_id: int, event_data: dict):
         .update(update_data) \
         .eq("id", job_id) \
         .execute()
+
+
+@router.post("/jobs/{job_id}/sync-status")
+async def sync_job_status(
+    job_id: int,
+    user=Depends(get_current_user),
+):
+    """
+    Manually sync job status from HeyGen API
+
+    This endpoint queries HeyGen for the current status of a video job
+    and updates the database accordingly. Use this if the webhook isn't
+    being called by HeyGen.
+    """
+    require_permission(user, "marcel_gpt.view_jobs")
+
+    tenant_id = user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(400, "User not assigned to a tenant")
+
+    # Get job
+    job_res = supabase.table("video_jobs") \
+        .select("*") \
+        .eq("id", job_id) \
+        .eq("tenant_id", tenant_id) \
+        .limit(1) \
+        .execute()
+
+    job_data = ensure_response(job_res)
+    if not job_data:
+        raise HTTPException(404, "Job not found")
+
+    job = job_data[0]
+    heygen_job_id = job.get("heygen_job_id")
+
+    if not heygen_job_id:
+        raise HTTPException(400, "Job not yet submitted to HeyGen")
+
+    # Get HeyGen service
+    heygen = get_heygen_service(tenant_id)
+    if not heygen:
+        raise HTTPException(400, "HeyGen API key not configured")
+
+    try:
+        # Get status from HeyGen
+        status_response = await heygen.get_video_status(heygen_job_id)
+
+        # Extract video info
+        video_id = status_response.get("data", {}).get("video_id")
+        heygen_status = status_response.get("data", {}).get("status", "unknown")
+        video_url = status_response.get("data", {}).get("video_url")
+        duration = status_response.get("data", {}).get("duration")
+        thumbnail_url = status_response.get("data", {}).get("thumbnail_url")
+
+        # Map HeyGen status to our status
+        status_map = {
+            "processing": "processing",
+            "completed": "completed",
+            "failed": "failed"
+        }
+        our_status = status_map.get(heygen_status, heygen_status)
+
+        # Update job status
+        update_data = {"status": our_status}
+
+        if our_status == "completed":
+            update_data["completed_at"] = datetime.now().isoformat()
+            update_data["actual_duration"] = duration
+
+            # Check if artifacts already exist
+            artifact_res = supabase.table("video_artifacts") \
+                .select("id") \
+                .eq("job_id", job_id) \
+                .limit(1) \
+                .execute()
+
+            artifacts = ensure_response(artifact_res)
+
+            # Create artifact if it doesn't exist
+            if not artifacts and video_url:
+                artifact_data = {
+                    "job_id": job_id,
+                    "heygen_url": video_url,
+                    "storage_key": f"videos/{job_id}/video.mp4",
+                    "duration": duration,
+                    "thumbnail_url": thumbnail_url,
+                    "meta": {}
+                }
+                supabase.table("video_artifacts") \
+                    .insert(artifact_data) \
+                    .execute()
+
+        elif our_status == "failed":
+            update_data["failed_at"] = datetime.now().isoformat()
+            error_msg = status_response.get("data", {}).get("error", "Video generation failed")
+            update_data["error_message"] = error_msg
+
+        supabase.table("video_jobs") \
+            .update(update_data) \
+            .eq("id", job_id) \
+            .execute()
+
+        return {
+            "status": "synced",
+            "job_id": job_id,
+            "heygen_status": heygen_status,
+            "our_status": our_status,
+            "updated": update_data
+        }
+
+    except Exception as e:
+        import sys
+        print(f"[Webhook] Error syncing status for job {job_id}: {str(e)}", file=sys.stderr, flush=True)
+        raise HTTPException(500, f"Failed to sync status: {str(e)}")
