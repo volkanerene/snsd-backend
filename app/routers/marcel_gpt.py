@@ -877,7 +877,7 @@ async def list_jobs(
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
-    """List video generation jobs for current tenant"""
+    """List video generation jobs for current tenant with artifacts"""
     require_permission(user, "marcel_gpt.view_jobs")
 
     tenant_id = user.get("tenant_id")
@@ -885,7 +885,7 @@ async def list_jobs(
         raise HTTPException(400, "User not assigned to a tenant")
 
     query = supabase.table("video_jobs") \
-        .select("*") \
+        .select("*, video_artifacts(*)") \
         .eq("tenant_id", tenant_id)
 
     if status:
@@ -895,7 +895,14 @@ async def list_jobs(
         .order("created_at", desc=True)
 
     res = query.execute()
-    return {"jobs": ensure_response(res), "count": len(res.data) if res.data else 0}
+
+    # Transform video_artifacts array to artifacts key for consistency
+    jobs = ensure_response(res)
+    for job in jobs:
+        if "video_artifacts" in job:
+            job["artifacts"] = job.pop("video_artifacts")
+
+    return {"jobs": jobs, "count": len(jobs) if jobs else 0}
 
 
 @router.get("/jobs/{job_id}")
