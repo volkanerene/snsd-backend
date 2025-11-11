@@ -247,7 +247,7 @@ async def sync_job_status(
     and updates the database accordingly. Use this if the webhook isn't
     being called by HeyGen.
     """
-    require_permission(user, "marcel_gpt.view_jobs")
+    require_permission(user, "modules.access_marcel_gpt")
 
     tenant_id = user.get("tenant_id")
     if not tenant_id:

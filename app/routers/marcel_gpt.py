@@ -878,7 +878,7 @@ async def list_jobs(
     offset: int = Query(0, ge=0),
 ):
     """List video generation jobs for current tenant with artifacts"""
-    require_permission(user, "marcel_gpt.view_jobs")
+    require_permission(user, "modules.access_marcel_gpt")
 
     tenant_id = user.get("tenant_id")
     if not tenant_id:
@@ -911,7 +911,7 @@ async def get_job(
     user=Depends(get_current_user),
 ):
     """Get job details with artifacts"""
-    require_permission(user, "marcel_gpt.view_jobs")
+    require_permission(user, "modules.access_marcel_gpt")
 
     tenant_id = user.get("tenant_id")
 
@@ -984,7 +984,7 @@ async def check_job_status(
     Check job status from HeyGen API
     Manually poll for updates (useful for debugging)
     """
-    require_permission(user, "marcel_gpt.view_jobs")
+    require_permission(user, "modules.access_marcel_gpt")
 
     tenant_id = user.get("tenant_id")
 
