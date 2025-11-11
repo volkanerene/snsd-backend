@@ -822,6 +822,7 @@ async def generate_video(
                 avatar_id=avatar_id,
                 voice_id=payload["voice_id"],
                 callback_url=full_callback_url,
+                video_title=payload.get("title") or payload.get("video_title"),
                 **heygen_kwargs
             )
         else:
@@ -1133,50 +1134,6 @@ async def generate_script(
         raise HTTPException(500, f"Script generation failed: {str(e)}")
 
 
-@router.post("/scripts/from-pdf")
-async def generate_script_from_pdf(
-    file: UploadFile = File(...),
-    user=Depends(get_current_user),
-):
-    """
-    Extract text from PDF and generate video script
-
-    Multipart form data:
-    - file: PDF file
-    - format_instructions: Optional formatting requirements
-    """
-    require_permission(user, "marcel_gpt.access")
-
-    from app.utils.pdf_utils import extract_text_from_pdf
-    from app.services.openai_service import OpenAIService
-
-    if not file.filename.endswith('.pdf'):
-        raise HTTPException(400, "Only PDF files are supported")
-
-    try:
-        # Extract text from PDF
-        pdf_text = await extract_text_from_pdf(file.file)
-
-        # Generate script from extracted text
-        openai_service = OpenAIService()
-        script = await openai_service.extract_dialogue_from_text(
-            text=pdf_text,
-            format_instructions=None  # Could add form field for this
-        )
-
-        return {
-            "script": script,
-            "source": "pdf",
-            "filename": file.filename,
-            "generated_at": datetime.now().isoformat()
-        }
-
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    except Exception as e:
-        raise HTTPException(500, f"PDF script generation failed: {str(e)}")
-
-
 @router.post("/scripts/refine")
 async def refine_script(
     payload: dict = Body(...),
@@ -1329,7 +1286,7 @@ async def generate_script_from_pdf(
     user=Depends(get_current_user),
 ):
     """Generate a video script from a PDF file"""
-    require_permission(user, "modules.access_marcel_gpt")
+    require_permission(user, "marcel_gpt.access")
 
     from app.services.script_generation_service import (
         generate_script_from_pdf,

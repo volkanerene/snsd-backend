@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     SUPABASE_SERVICE_ROLE_KEY: str
     SUPABASE_JWT_SECRET: str | None = None  # JWT Secret for token verification
     OPENAI_API_KEY: str | None = None
+    HEYGEN_FALLBACK_API_KEY: str | None = None
     API_URL: str = "https://api.snsdconsultant.com"  # Public API URL for webhooks
     API_BASE_URL: str = "https://api.snsdconsultant.com"  # API base URL for N8N callbacks
     N8N_WEBHOOK_URL: str | None = None  # N8N webhook for FRM32 AI scoring

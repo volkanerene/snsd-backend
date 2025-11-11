@@ -6,6 +6,7 @@ import httpx
 from typing import Optional, Dict, List, Any
 from datetime import datetime, timedelta
 from app.db.supabase_client import supabase
+from app.config import settings
 
 
 class HeyGenService:
@@ -418,6 +419,7 @@ class HeyGenService:
         avatar_id: str,
         voice_id: str,
         callback_url: Optional[str] = None,
+        video_title: Optional[str] = None,
         **kwargs
     ) -> Dict:
         """
@@ -428,6 +430,7 @@ class HeyGenService:
             avatar_id: Avatar ID (must be AV4 compatible) or image_key for photo avatars
             voice_id: Voice ID from catalog
             callback_url: Webhook URL for completion
+            video_title: Title for the video (required by HeyGen AV4 API)
             **kwargs: Additional parameters (image_key for photo avatars, etc.)
 
         Returns:
@@ -438,6 +441,10 @@ class HeyGenService:
             "script": input_text,
             "voice_id": voice_id
         }
+
+        # Add video_title (required by HeyGen AV4 API)
+        if video_title:
+            payload["video_title"] = video_title
 
         # For photo avatars, use image_key parameter; for standard avatars use avatar_id
         # If image_key is explicitly provided in kwargs, use it; otherwise use avatar_id
@@ -573,6 +580,39 @@ class HeyGenService:
             "POST", "/v2/photo_avatar/look/generate", data=payload
         )
 
+    async def generate_photo_avatar_looks(
+        self,
+        image_url: str,
+        group_id: str,
+        prompt: str,
+        style: str = "Realistic",
+        orientation: str = "square",
+        pose: str = "half_body"
+    ) -> Dict:
+        """
+        Generate new photo avatar looks using HeyGen's photo avatar generation API
+
+        Args:
+            image_url: URL of avatar image (e.g., preview image from HeyGen)
+            group_id: Avatar group ID (e.g., Marcel group ID)
+            prompt: Description of the look to generate
+            style: Style - 'Realistic', 'Pixar', 'Cinematic', 'Vintage', 'Noir', 'Cyberpunk', 'Unspecified'
+            orientation: Orientation - 'square', 'horizontal', 'vertical'
+            pose: Pose - 'half_body', 'close_up', 'full_body'
+
+        Returns:
+            Generation response with generation_id and image_keys
+        """
+        payload = {
+            "image_url": image_url,
+            "group_id": group_id,
+            "prompt": prompt,
+            "style": style,
+            "orientation": orientation,
+            "pose": pose
+        }
+        return await self.generate_photo_avatar_look(payload)
+
     async def get_photo_avatar_generation(self, generation_id: str) -> Dict:
         return await self._make_request(
             "GET", f"/v2/photo_avatar/generation/{generation_id}"
@@ -607,3 +647,16 @@ def get_heygen_service(tenant_id: int) -> Optional[HeyGenService]:
 
     api_key = result.data[0]["heygen_api_key"]
     return HeyGenService(api_key)
+
+
+def get_fallback_heygen_service() -> Optional[HeyGenService]:
+    """
+    Get HeyGen service instance based on fallback API key.
+
+    Returns:
+        HeyGenService instance or None if fallback key not configured.
+    """
+    fallback_key = settings.HEYGEN_FALLBACK_API_KEY
+    if not fallback_key:
+        return None
+    return HeyGenService(fallback_key)
