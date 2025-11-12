@@ -5,6 +5,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.routers import (
     ai_processing,
     audit_log,
+    auth,
     contractor_auth,
     contractors,
     evaluations,
@@ -96,6 +97,9 @@ app.include_router(roles.router, prefix="/roles", tags=["Roles"])
 app.include_router(permissions.router, prefix="/permissions", tags=["Permissions"])
 app.include_router(invitations.router, prefix="/invitations", tags=["Invitations"])
 app.include_router(subscription_tiers.router, prefix="/tiers", tags=["Subscription Tiers"])
+
+# Public Auth (Public - no authentication required)
+app.include_router(auth.router)  # Forgot password, reset password
 
 # Contractor Auth (Public - no authentication required)
 app.include_router(contractor_auth.router)
