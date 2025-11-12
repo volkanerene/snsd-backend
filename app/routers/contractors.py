@@ -3,7 +3,6 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from app.db.supabase_client import supabase
 from app.routers.deps import ensure_response, require_admin, require_tenant
 from app.utils.auth import get_current_user
-from app.middleware.subscription import check_usage_limit
 
 router = APIRouter()
 
@@ -35,9 +34,6 @@ async def create_contractor(
     tenant_id: str = Depends(require_tenant),
 ):
     require_admin(user)
-
-    # Check subscription limit before creating
-    await check_usage_limit(tenant_id, "contractors", increment=1)
 
     payload = dict(payload or {})
     payload["tenant_id"] = tenant_id
