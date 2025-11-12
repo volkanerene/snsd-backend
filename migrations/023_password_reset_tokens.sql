@@ -32,15 +32,16 @@ CREATE POLICY "Allow public to insert password reset tokens"
   FOR INSERT
   WITH CHECK (true);
 
--- Users can only view their own tokens
+-- Users can only view their own tokens or admins can view all
 CREATE POLICY "Allow users to view their own reset tokens"
   ON password_reset_tokens
   FOR SELECT
   USING (
     auth.uid() = user_id OR
-    (SELECT role FROM public.roles WHERE id = (
-      SELECT role_id FROM public.profiles WHERE id = auth.uid()
-    )) = 'admin'
+    (
+      SELECT slug FROM public.roles
+      WHERE id = (SELECT role_id FROM public.profiles WHERE id = auth.uid())
+    ) IN ('snsd_admin', 'company_admin')
   );
 
 -- Users and admin can update their own tokens
@@ -49,9 +50,10 @@ CREATE POLICY "Allow users to update their own reset tokens"
   FOR UPDATE
   USING (
     auth.uid() = user_id OR
-    (SELECT role FROM public.roles WHERE id = (
-      SELECT role_id FROM public.profiles WHERE id = auth.uid()
-    )) = 'admin'
+    (
+      SELECT slug FROM public.roles
+      WHERE id = (SELECT role_id FROM public.profiles WHERE id = auth.uid())
+    ) IN ('snsd_admin', 'company_admin')
   );
 
 -- Add comment explaining the table
