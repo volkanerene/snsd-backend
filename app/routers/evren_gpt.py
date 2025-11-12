@@ -64,22 +64,19 @@ async def send_frm32_invitation(contractor_id: str, session_id: str, custom_mess
     # Create form link (points to contractor signup page)
     form_link = f"https://www.snsdconsultant.com/signup?session={session_id}&contractor={contractor_id}"
 
-    subject = "EvrenGPT Evaluation Process - FRM32 Form"
-    body = f"""
-    Dear {contractor['contact_person']},
+    subject = "EvrenGPT Evaluation Invitation – FRM32 Form"
+    body = f"""Dear {contractor['contact_person']},
 
-    You have been invited to participate in the EvrenGPT evaluation process for {contractor['name']}.
+You are invited to participate in the EvrenGPT Evaluation Process for {contractor['name']}.
 
-    Please click the link below to fill out the FRM32 form:
-    {form_link}
+Please click the link below to complete the required form:
 
-    Session ID: {session_id}
+👉 Fill out the FRM32 Form: {form_link}
 
-    {custom_message if custom_message else ''}
+{f"{custom_message}" if custom_message else ""}
 
-    Best regards,
-    SnSD Consultants Team
-    """
+Best regards,
+SnSD Consultants Team"""
 
     # Create notification record
     notification = supabase.table("evren_gpt_notifications").insert({
