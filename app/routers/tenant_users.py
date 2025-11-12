@@ -34,18 +34,18 @@ async def list_tenant_users(
 
     # If not super admin, filter to own tenants
     if user.get("role_id") != 1:
-        # Get user's tenant IDs
+        # Get user's tenant IDs (all tenants they're a member of, regardless of role)
         user_tenants_res = (
             supabase.table("tenant_users")
             .select("tenant_id")
             .eq("user_id", user["id"])
-            .eq("role_id", 2)  # Admin role
             .execute()
         )
         user_tenant_ids = [t["tenant_id"] for t in user_tenants_res.data]
 
         if not user_tenant_ids:
-            raise HTTPException(403, "Access denied")
+            # User has no tenant memberships, return empty list instead of error
+            return ensure_response([], 0)
 
         query = query.in_("tenant_id", user_tenant_ids)
 
