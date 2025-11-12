@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Body
 from pydantic import BaseModel, EmailStr
 import random
 import string
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from app.db.supabase_client import supabase
 from app.services.email_service import EmailService
@@ -69,7 +69,7 @@ async def forgot_password(
 
         # Generate reset token
         reset_token = generate_reset_token()
-        reset_token_expires = datetime.utcnow() + timedelta(hours=24)
+        reset_token_expires = datetime.now(timezone.utc) + timedelta(hours=24)
 
         # Store reset token in database
         token_data = {
@@ -220,7 +220,7 @@ async def reset_password(
         expires_at = token_record.get("expires_at")
 
         # Check if token is expired
-        if expires_at and datetime.fromisoformat(expires_at) < datetime.utcnow():
+        if expires_at and datetime.fromisoformat(expires_at) < datetime.now(timezone.utc):
             raise HTTPException(400, "Reset token has expired")
 
         # Update password via Supabase Auth
