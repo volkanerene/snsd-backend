@@ -22,13 +22,12 @@ async def list_tenant_users(
     List all tenant-user relationships
     Super admin can see all, tenant admins can see their tenant
     """
-    # Build query with joins
+    # Build query with joins to tenant and role (skip user join - auth.users not exposed by PostgREST)
     query = supabase.table("tenant_users").select(
         """
         *,
-        tenant:tenant_id(id, name, status),
-        user:user_id(id, email, full_name),
-        role:role_id(id, name)
+        tenant:tenant_id(id, name, slug, logo_url, status),
+        role:role_id(id, name, slug)
         """
     )
 
