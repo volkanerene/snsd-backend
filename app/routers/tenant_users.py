@@ -43,8 +43,36 @@ async def list_tenant_users(
         user_tenant_ids = [t["tenant_id"] for t in user_tenants_res.data]
 
         if not user_tenant_ids:
-            # User has no tenant memberships, return empty list instead of error
-            return ensure_response([], 0)
+            # Some roles (like contractors) may not have explicit tenant_user rows.
+            # Fall back to the tenant on their profile so the UI can still display context.
+            fallback_tenant_id = user.get("tenant_id")
+            if fallback_tenant_id:
+                tenant_res = (
+                    supabase.table("tenants")
+                    .select("id, name, slug, logo_url, status")
+                    .eq("id", fallback_tenant_id)
+                    .limit(1)
+                    .execute()
+                )
+                tenant_data = tenant_res.data[0] if tenant_res.data else None
+                if tenant_data:
+                    virtual_relationship = {
+                        "id": f"virtual-{user['id']}-{fallback_tenant_id}",
+                        "tenant_id": fallback_tenant_id,
+                        "user_id": user["id"],
+                        "role_id": user.get("role_id"),
+                        "status": "active",
+                        "tenant": tenant_data,
+                        "role": {
+                            "id": user.get("role_id"),
+                            "name": user.get("role_name") or "Member",
+                            "slug": None
+                        }
+                    }
+                    return [virtual_relationship]
+
+            # User has no tenant memberships we can infer
+            return []
 
         query = query.in_("tenant_id", user_tenant_ids)
 

@@ -1420,6 +1420,10 @@ async def _populate_missing_artifacts(jobs: List[Dict[str, Any]], heygen_service
             thumbnail_url = data.get("thumbnail_url") or data.get("cover_url")
             duration = data.get("duration")
 
+            # Convert duration from float to integer (HeyGen API returns float like 21.726)
+            if duration is not None:
+                duration = int(duration)
+
             if video_url:
                 print(f"[MarcelGPT] Found video URL for job {job['id']}: {video_url[:50]}...")
 

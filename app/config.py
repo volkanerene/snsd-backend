@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     N8N_WEBHOOK_URL: str | None = None  # N8N webhook for FRM32 AI scoring
     PORT: int | None = 8000
     DASHBOARD_BASE_URL: str = "https://www.snsdconsultant.com"
+    YOUTUBE_CHANNEL_ID: str | None = None
+    YOUTUBE_CHANNEL_HANDLE: str | None = "SnSDConsultants"
 
     # Brevo Email Service (SMTP)
     BREVO_SMTP_HOST: str | None = None

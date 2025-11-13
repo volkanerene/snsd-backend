@@ -1,6 +1,7 @@
 """
 MarcelGPT Webhook - HeyGen Callback Handler
 """
+import logging
 from fastapi import APIRouter, Request, HTTPException, Query, Depends
 from datetime import datetime
 import hmac
@@ -12,6 +13,7 @@ from app.utils.auth import get_current_user, require_permission
 from app.services.heygen_service import get_heygen_service
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 async def verify_webhook_signature(
@@ -108,13 +110,13 @@ async def heygen_webhook(
     # Handle different event types
     try:
         if event_type == "video.processing":
-            await handle_processing(job_id, event_data)
+            await handle_processing(job)
 
         elif event_type == "video.success":
-            await handle_success(job_id, event_data)
+            await handle_success(job, event_data)
 
         elif event_type == "video.failed":
-            await handle_failure(job_id, event_data)
+            await handle_failure(job, event_data)
 
         else:
             # Unknown event type, log but don't fail
@@ -127,18 +129,18 @@ async def heygen_webhook(
         raise HTTPException(500, f"Webhook processing failed: {str(e)}")
 
 
-async def handle_processing(job_id: int, event_data: dict):
+async def handle_processing(job: dict):
     """Handle video.processing event"""
     supabase.table("video_jobs") \
         .update({
             "status": "processing",
             "processing_at": datetime.now().isoformat()
         }) \
-        .eq("id", job_id) \
+        .eq("id", job["id"]) \
         .execute()
 
 
-async def handle_success(job_id: int, event_data: dict):
+async def handle_success(job: dict, event_data: dict):
     """
     Handle video.success event
 
@@ -151,8 +153,32 @@ async def handle_success(job_id: int, event_data: dict):
         "gif_url": "https://..."
     }
     """
+    job_id = job["id"]
+    tenant_id = job.get("tenant_id")
+    heygen_job_id = job.get("heygen_job_id")
+
     video_url = event_data.get("video_url")
     duration = event_data.get("duration")
+    thumbnail_url = event_data.get("thumbnail_url")
+    gif_url = event_data.get("gif_url")
+    caption_url = event_data.get("caption_url")
+
+    if (not video_url or not thumbnail_url or not duration) and tenant_id:
+        heygen_service = get_heygen_service(tenant_id)
+        if heygen_service and heygen_job_id:
+            try:
+                status_payload = await heygen_service.get_video_status(heygen_job_id)
+                data = status_payload.get("data", {})
+                video_url = video_url or data.get("video_url")
+                thumbnail_url = thumbnail_url or data.get("thumbnail_url") or data.get("cover_url")
+                duration = duration or data.get("duration")
+                caption_url = caption_url or data.get("subtitle_url")
+            except Exception as fetch_error:
+                logger.warning(
+                    "[MarcelWebhook] Unable to fetch video metadata for job %s: %s",
+                    job_id,
+                    fetch_error
+                )
 
     # Update job status
     supabase.table("video_jobs") \
@@ -164,29 +190,37 @@ async def handle_success(job_id: int, event_data: dict):
         .eq("id", job_id) \
         .execute()
 
-    # Create video artifact
-    artifact_data = {
-        "job_id": job_id,
-        "heygen_url": video_url,
-        "storage_key": f"videos/{job_id}/video.mp4",  # Will be uploaded to S3
-        "duration": duration,
-        "thumbnail_url": event_data.get("thumbnail_url"),
-        "meta": {
-            "gif_url": event_data.get("gif_url"),
-            "caption_url": event_data.get("caption_url")
-        }
-    }
+    if video_url:
+        # Remove previous artifacts for this job to avoid duplicates
+        supabase.table("video_artifacts") \
+            .delete() \
+            .eq("job_id", job_id) \
+            .execute()
 
-    supabase.table("video_artifacts") \
-        .insert(artifact_data) \
-        .execute()
+        storage_key = video_url or f"videos/{job_id}/video.mp4"
+        artifact_data = {
+            "job_id": job_id,
+            "heygen_url": video_url,
+            "storage_key": storage_key,
+            "signed_url": video_url,
+            "duration": duration,
+            "thumbnail_url": thumbnail_url,
+            "meta": {
+                "gif_url": gif_url,
+                "caption_url": caption_url
+            }
+        }
+
+        supabase.table("video_artifacts") \
+            .insert(artifact_data) \
+            .execute()
 
     # TODO: Download video from HeyGen and upload to permanent storage (S3/Spaces)
     # HeyGen URLs expire after some time, so we need to copy them
     # This should be done asynchronously via a background task
 
 
-async def handle_failure(job_id: int, event_data: dict):
+async def handle_failure(job: dict, event_data: dict):
     """
     Handle video.failed event
 
@@ -199,6 +233,8 @@ async def handle_failure(job_id: int, event_data: dict):
     error_message = event_data.get("error", "Video generation failed")
 
     # Get current job to check retry count
+    job_id = job["id"]
+
     job_res = supabase.table("video_jobs") \
         .select("retry_count, max_retries") \
         .eq("id", job_id) \

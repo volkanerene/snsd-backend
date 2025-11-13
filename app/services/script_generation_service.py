@@ -5,6 +5,8 @@ Generates video scripts using ChatGPT for education topics, PDFs, and incident r
 
 import json
 import asyncio
+import base64
+from io import BytesIO
 from typing import Optional, Dict, Any, List
 from app.config import settings
 
@@ -18,13 +20,17 @@ try:
 except ImportError:
     PyPDF2 = None
 
+try:
+    from pptx import Presentation
+except ImportError:
+    Presentation = None
+
 
 def _extract_text_from_pdf(file_bytes: bytes) -> str:
     """Extract text from PDF bytes"""
     if PyPDF2 is None:
         raise ValueError("PyPDF2 not installed. Install with: pip install PyPDF2")
 
-    from io import BytesIO
     pdf_file = BytesIO(file_bytes)
     pdf_reader = PyPDF2.PdfReader(pdf_file)
 
@@ -33,6 +39,91 @@ def _extract_text_from_pdf(file_bytes: bytes) -> str:
         text += page.extract_text() + "\n"
 
     return text.strip()
+
+
+def _extract_text_from_pptx(file_bytes: bytes) -> str:
+    """Extract text from PPTX bytes"""
+    if Presentation is None:
+        raise ValueError("python-pptx not installed. Install with: pip install python-pptx")
+
+    presentation = Presentation(BytesIO(file_bytes))
+    texts: List[str] = []
+    for slide in presentation.slides:
+        for shape in slide.shapes:
+            if hasattr(shape, "text") and shape.text:
+                texts.append(shape.text)
+    return "\n".join(texts).strip()
+
+
+def _parse_chat_message_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                if item.get("type") in {"text", "output_text"} and item.get("text"):
+                    parts.append(item["text"])
+        return "\n".join(parts)
+    return ""
+
+
+async def _extract_text_from_image(file_bytes: bytes, mime_type: str) -> str:
+    """Use OpenAI vision to extract text from images"""
+    if OpenAI is None or not settings.OPENAI_API_KEY:
+        raise ValueError("OpenAI API key not configured for image extraction")
+
+    client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    encoded = base64.b64encode(file_bytes).decode("utf-8")
+    data_url = f"data:{mime_type};base64,{encoded}"
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "system",
+                "content": "You read images and return the exact text content. Respond with plain text only."
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Extract all readable text from this document image."},
+                    {"type": "image_url", "image_url": {"url": data_url}}
+                ]
+            }
+        ],
+        max_tokens=700,
+    )
+
+    content = response.choices[0].message.content
+    extracted = _parse_chat_message_content(content).strip()
+    if not extracted:
+        raise ValueError("Could not extract text from image")
+    return extracted
+
+
+async def extract_text_from_document(
+    filename: str,
+    content_type: Optional[str],
+    file_bytes: bytes
+) -> str:
+    """Determine document type and extract text accordingly"""
+    lowered = (filename or "").lower()
+    content_type = content_type or ""
+
+    if lowered.endswith(".pdf") or content_type == "application/pdf":
+        return _extract_text_from_pdf(file_bytes)
+
+    if lowered.endswith((".pptx", ".ppt")) or content_type in {
+        "application/vnd.ms-powerpoint",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    }:
+        return _extract_text_from_pptx(file_bytes)
+
+    if content_type.startswith("image/") or lowered.endswith((".png", ".jpg", ".jpeg", ".webp")):
+        return await _extract_text_from_image(file_bytes, content_type or "image/png")
+
+    raise ValueError(f"Unsupported file type for {filename or 'document'}")
 
 
 def _build_education_prompt(topic: str) -> str:
@@ -50,10 +141,12 @@ The script should:
 3. Include practical takeaways
 4. End with a memorable conclusion
 
-Format the script naturally as dialogue/narration that would be read by a speaking avatar.
-Keep sentences concise and engaging. Use a professional but friendly tone.
+IMPORTANT FORMAT RULES:
+- Write the entire response as spoken narration or dialogue only.
+- Do NOT include headings, bullet points, scene directions, or stage notes.
+- No brackets, numbered lists, or meta commentary. Every line should sound like someone speaking naturally.
 
-Write ONLY the script content, no metadata or stage directions."""
+Keep sentences concise and engaging. Use a professional but friendly tone."""
 
 
 def _build_pdf_script_prompt(pdf_content: str) -> str:
@@ -61,7 +154,7 @@ def _build_pdf_script_prompt(pdf_content: str) -> str:
     return f"""You are a professional training video scriptwriter. Your task is to convert
 educational material into an engaging video script.
 
-Here is the educational content from a PDF:
+Here is the educational content from a PDF (trimmed for length):
 
 ---
 {pdf_content[:3000]}
@@ -73,10 +166,12 @@ Create a video script that:
 3. Includes practical examples or applications
 4. Has a clear beginning, middle, and end
 
-The script will be narrated by an AI avatar, so write it naturally as if someone is speaking.
-Keep sentences concise. Make it suitable for a 2-3 minute video.
+STRICT FORMAT RULES:
+- Output MUST be pure spoken dialogue/narration with complete sentences.
+- Do NOT add headings, bullet points, numbered lists, scene directions, or stage notes.
+- Avoid meta phrases like "In this script" or "Scene 1". Every line should sound like the narrator speaking directly to the audience.
 
-Write ONLY the script content, no metadata."""
+Keep it suitable for a 2-3 minute video and write ONLY the spoken script."""
 
 
 def _build_incident_script_prompt(
@@ -172,8 +267,8 @@ async def generate_script_from_topic(topic: str) -> Dict[str, Any]:
         }
 
 
-async def generate_script_from_pdf(pdf_content: str) -> Dict[str, Any]:
-    """Generate a video script from PDF content"""
+async def generate_script_from_material(material: str) -> Dict[str, Any]:
+    """Generate a video script from textual training material"""
     try:
         if not settings.OPENAI_API_KEY:
             return {
@@ -188,9 +283,9 @@ async def generate_script_from_pdf(pdf_content: str) -> Dict[str, Any]:
             }
 
         client = OpenAI(api_key=settings.OPENAI_API_KEY)
-        prompt = _build_pdf_script_prompt(pdf_content)
+        prompt = _build_pdf_script_prompt(material)
 
-        print(f"[Script Gen] Generating script from PDF ({len(pdf_content)} chars)...")
+        print(f"[Script Gen] Generating script from material ({len(material)} chars)...")
 
         response = client.chat.completions.create(
             model="gpt-4-turbo",
@@ -213,7 +308,7 @@ async def generate_script_from_pdf(pdf_content: str) -> Dict[str, Any]:
         return {
             "success": True,
             "script": script,
-            "source": "pdf",
+            "source": "document",
             "generated_at": str(__import__('datetime').datetime.now(
                 __import__('datetime').timezone.utc
             ).isoformat())
@@ -223,8 +318,12 @@ async def generate_script_from_pdf(pdf_content: str) -> Dict[str, Any]:
         print(f"[Script Gen] Error: {str(e)}")
         return {
             "success": False,
-            "error": f"PDF script generation failed: {str(e)}"
+            "error": f"Document script generation failed: {str(e)}"
         }
+
+
+# Backwards compatibility alias
+generate_script_from_pdf = generate_script_from_material
 
 
 def _generate_training_questions(
@@ -297,6 +396,81 @@ Keep questions professional and related to the incident. Make them assessment-fo
 
     except Exception as e:
         print(f"[Training Questions] Error: {str(e)}")
+        return {"success": False, "questions": []}
+
+
+def generate_questions_from_script(script_text: str) -> Dict[str, Any]:
+    """
+    Generate two multiple-choice and one short-answer question
+    based on the provided training script.
+    """
+    try:
+        if OpenAI is None or not settings.OPENAI_API_KEY:
+            return {"success": False, "questions": []}
+
+        client = OpenAI(api_key=settings.OPENAI_API_KEY)
+        trimmed_script = script_text[:4000]
+
+        prompt = f"""You are a training assessment expert.
+Read the following training script and produce assessment questions to verify comprehension.
+
+SCRIPT:
+---
+{trimmed_script}
+---
+
+Respond with valid JSON (no markdown) using this structure:
+{{
+  "questions": [
+    {{
+      "type": "multiple_choice",
+      "question": "...",
+      "options": ["Option A", "Option B", "Option C", "Option D"],
+      "correct_answer": 0
+    }},
+    {{
+      "type": "multiple_choice",
+      "question": "...",
+      "options": ["Option A", "Option B", "Option C", "Option D"],
+      "correct_answer": 2
+    }},
+    {{
+      "type": "text",
+      "question": "Short-answer reflection question"
+    }}
+  ]
+}}
+
+Guidelines:
+- Both multiple choice questions must have exactly 4 options with zero-based correct_answer index.
+- The final question must be open-ended (type = "text").
+- Focus on practical safety takeaways referenced in the script."""
+
+        response = client.chat.completions.create(
+            model="gpt-4-turbo",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You generate structured assessment questions and only return strict JSON output."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            temperature=0.4,
+            max_tokens=700
+        )
+
+        response_text = response.choices[0].message.content.strip()
+        questions_data = json.loads(response_text)
+        return {
+            "success": True,
+            "questions": questions_data.get("questions", [])
+        }
+
+    except Exception as e:
+        print(f"[Training Questions] Error generating from script: {str(e)}")
         return {"success": False, "questions": []}
 
 

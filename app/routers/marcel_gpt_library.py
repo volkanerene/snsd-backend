@@ -275,16 +275,51 @@ async def list_youtube_videos(
             "media": "http://search.yahoo.com/mrss/"
         }
         root = ET.fromstring(response.text)
+        print(f"[YouTube] Feed root tag: {root.tag}, attribs: {root.attrib}")
+
         videos: List[YoutubeVideo] = []
-        for entry in root.findall("atom:entry", ns)[:limit]:
+
+        # Try multiple entry search patterns
+        entries = root.findall("atom:entry", ns)
+        print(f"[YouTube] Found {len(entries)} entries using atom:entry")
+
+        # If no entries found with namespace, try without namespace prefix
+        if len(entries) == 0:
+            entries = root.findall("{http://www.w3.org/2005/Atom}entry")
+            print(f"[YouTube] Found {len(entries)} entries using full namespace URI")
+
+        # If still no entries, try direct children
+        if len(entries) == 0:
+            entries = root.findall("entry")
+            print(f"[YouTube] Found {len(entries)} entries without namespace")
+
+        for entry in entries[:limit]:
             video_id_elem = entry.find("yt:videoId", ns)
+            if video_id_elem is None:
+                video_id_elem = entry.find("{http://www.youtube.com/xml/schemas/2015}videoId")
+
             title_elem = entry.find("atom:title", ns)
+            if title_elem is None:
+                title_elem = entry.find("{http://www.w3.org/2005/Atom}title")
+
             published_elem = entry.find("atom:published", ns)
+            if published_elem is None:
+                published_elem = entry.find("{http://www.w3.org/2005/Atom}published")
+
             link_elem = entry.find("atom:link", ns)
+            if link_elem is None:
+                link_elem = entry.find("{http://www.w3.org/2005/Atom}link")
+
             media_group = entry.find("media:group", ns)
+            if media_group is None:
+                media_group = entry.find("{http://search.yahoo.com/mrss/}group")
+
             description_elem = media_group.find("media:description", ns) if media_group is not None else None
+            if description_elem is None and media_group is not None:
+                description_elem = media_group.find("{http://search.yahoo.com/mrss/}description")
 
             if not video_id_elem or not title_elem:
+                print(f"[YouTube] Skipping entry: missing video_id_elem={video_id_elem is not None} or title_elem={title_elem is not None}")
                 continue
 
             video_id_text = video_id_elem.text
@@ -294,6 +329,9 @@ async def list_youtube_videos(
             if media_group is not None:
                 # Try media:thumbnail from media:group
                 thumbnail_elem = media_group.find("media:thumbnail", ns)
+                if thumbnail_elem is None:
+                    thumbnail_elem = media_group.find("{http://search.yahoo.com/mrss/}thumbnail")
+
                 if thumbnail_elem is not None:
                     thumbnail_url = thumbnail_elem.get("url")
                     print(f"[YouTube] Found thumbnail from media:thumbnail: {thumbnail_url[:50]}...")
@@ -321,6 +359,8 @@ async def list_youtube_videos(
         return {"videos": [video.dict() for video in videos]}
     except Exception as e:
         print(f"[YouTube] Error parsing feed: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(500, f"Failed to parse YouTube feed: {str(e)}")
 
 
