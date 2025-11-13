@@ -307,7 +307,8 @@ async def list_youtube_videos(
 
             description_elem = media_group.find("{http://search.yahoo.com/mrss/}description") if media_group is not None else None
 
-            if not video_id_elem or not title_elem:
+            # Use 'is None' check instead of 'not' to avoid XML Element truth value issues
+            if video_id_elem is None or title_elem is None:
                 print(f"[YouTube] Skipping entry: missing video_id_elem={video_id_elem is not None} or title_elem={title_elem is not None}")
                 continue
 
