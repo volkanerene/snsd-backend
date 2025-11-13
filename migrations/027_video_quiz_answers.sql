@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS video_quiz_answers (
   tenant_id UUID NOT NULL,
   assignment_id UUID NOT NULL,
   user_id UUID NOT NULL,
-  video_id UUID NOT NULL,
+  video_id INTEGER NOT NULL,
   question_index INT NOT NULL,
   question_text TEXT NOT NULL,
   question_type VARCHAR(20) NOT NULL, -- 'text', 'multiple_choice'
