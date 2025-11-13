@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS video_quiz_answers (
 
   CONSTRAINT fk_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
   CONSTRAINT fk_assignment FOREIGN KEY (assignment_id) REFERENCES marcel_gpt_video_assignments(id) ON DELETE CASCADE,
-  CONSTRAINT fk_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT fk_user FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE CASCADE,
   CONSTRAINT fk_video FOREIGN KEY (video_id) REFERENCES video_jobs(id) ON DELETE CASCADE
 );
 
