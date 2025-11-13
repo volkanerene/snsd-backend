@@ -553,6 +553,68 @@ async def get_assignment_stats(
     return stats
 
 
+@router.get("/all-assignments")
+async def get_all_assignments(
+    user=Depends(get_current_user),
+    status: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0)
+):
+    """
+    Get all video assignments for the tenant (Library Admins only).
+    Returns detailed assignment information including video and worker details.
+    """
+    require_library_admin(user)
+    require_permission(user, "marcel_gpt.view_library")
+
+    tenant_id = user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(400, "User not assigned to a tenant")
+
+    # Build query
+    query = supabase.table("marcel_gpt_video_assignments") \
+        .select(
+            "id, status, created_at, video_id, assigned_to_user_id, "
+            "assigned_by_user_id, notes, viewed_at, completed_at, "
+            "video:video_id(id, title, video_url, description, "
+            "duration_seconds, thumbnail_url, category), "
+            "assigned_to_user:assigned_to_user_id(id, email, full_name), "
+            "assigned_by_user:assigned_by_user_id(id, email, full_name)"
+        ) \
+        .eq("tenant_id", tenant_id)
+
+    # Filter by status if provided
+    if status:
+        query = query.eq("status", status)
+
+    # Get total count
+    count_res = supabase.table("marcel_gpt_video_assignments") \
+        .select("id", count="exact") \
+        .eq("tenant_id", tenant_id)
+    if status:
+        count_res = count_res.eq("status", status)
+    count_res = count_res.execute()
+    total = count_res.count or 0
+
+    # Execute query with pagination
+    res = query \
+        .order("created_at", desc=True) \
+        .range(offset, offset + limit - 1) \
+        .execute()
+
+    if res.error:
+        raise HTTPException(400, str(res.error))
+
+    assignments = res.data or []
+
+    return {
+        "data": assignments,
+        "total": total,
+        "offset": offset,
+        "limit": limit
+    }
+
+
 # =========================================================================
 # Helper Functions
 # =========================================================================
