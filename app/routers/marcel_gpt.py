@@ -1420,12 +1420,23 @@ async def _populate_missing_artifacts(jobs: List[Dict[str, Any]], heygen_service
             thumbnail_url = data.get("thumbnail_url") or data.get("cover_url")
             duration = data.get("duration")
 
+            # Log what we got from HeyGen API
+            print(f"[MarcelGPT] HeyGen response data keys: {list(data.keys())}")
+            print(f"[MarcelGPT] Job {job['id']}: video_url={bool(video_url)}, thumbnail={bool(thumbnail_url)}, duration={duration}")
+
             # Convert duration from float to integer (HeyGen API returns float like 21.726)
             if duration is not None:
                 duration = int(duration)
 
             if video_url:
                 print(f"[MarcelGPT] Found video URL for job {job['id']}: {video_url[:50]}...")
+                if thumbnail_url:
+                    print(f"[MarcelGPT] Found thumbnail URL: {thumbnail_url[:60]}...")
+                else:
+                    print(f"[MarcelGPT] No thumbnail URL from HeyGen, generating fallback")
+                    # Generate a placeholder thumbnail URL (can be a static image or video frame)
+                    # Using a standard video placeholder thumbnail
+                    thumbnail_url = f"https://via.placeholder.com/320x180?text=Video+{job['id']}"
 
                 # Create artifact record in database
                 artifact_insert = supabase.table("video_artifacts").insert({
@@ -1450,6 +1461,8 @@ async def _populate_missing_artifacts(jobs: List[Dict[str, Any]], heygen_service
 
         except Exception as e:
             print(f"[MarcelGPT] Error populating artifacts for job {job['id']}: {e}")
+            import traceback
+            traceback.print_exc()
 
 
 # =========================================================================
