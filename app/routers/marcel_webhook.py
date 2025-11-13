@@ -2,6 +2,7 @@
 MarcelGPT Webhook - HeyGen Callback Handler
 """
 import logging
+from typing import Optional
 from fastapi import APIRouter, Request, HTTPException, Query, Depends
 from datetime import datetime
 import hmac
@@ -11,6 +12,7 @@ from app.db.supabase_client import supabase
 from app.routers.deps import ensure_response
 from app.utils.auth import get_current_user, require_permission
 from app.services.heygen_service import get_heygen_service
+from app.services.email_service import EmailService, render_html_from_text
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -215,6 +217,8 @@ async def handle_success(job: dict, event_data: dict):
             .insert(artifact_data) \
             .execute()
 
+    await _notify_creator_video_ready(job, video_url)
+
     # TODO: Download video from HeyGen and upload to permanent storage (S3/Spaces)
     # HeyGen URLs expire after some time, so we need to copy them
     # This should be done asynchronously via a background task
@@ -269,6 +273,75 @@ async def handle_failure(job: dict, event_data: dict):
         .update(update_data) \
         .eq("id", job_id) \
         .execute()
+
+
+async def _notify_creator_video_ready(job: dict, video_url: Optional[str]):
+    """Send email notification to the job creator when a video completes."""
+    user_id = job.get("user_id")
+    if not user_id:
+        return
+
+    try:
+        profile_res = (
+            supabase.table("profiles")
+            .select("email, full_name")
+            .eq("id", user_id)
+            .limit(1)
+            .execute()
+        )
+        profile_data = ensure_response(profile_res)
+        if not profile_data:
+            return
+
+        profile = profile_data[0]
+        recipient = profile.get("email")
+        if not recipient:
+            return
+
+        full_name = profile.get("full_name") or "there"
+        title = job.get("title") or "Your MarcelGPT Training"
+        watch_link = "https://www.snsdconsultant.com/dashboard/marcel-gpt/library"
+        subject = "Your MarcelGPT video is ready"
+
+        body_lines = [
+            f"Hi {full_name},",
+            "",
+            f"Your video \"{title}\" has finished processing and is ready to review.",
+            "",
+            f"Library: {watch_link}",
+        ]
+        if video_url:
+            body_lines.append(f"Direct link: {video_url}")
+        body_lines.extend(
+            [
+                "",
+                "You can always revisit your trainings from the Training Builder Library.",
+                "",
+                "– SnSD MarcelGPT",
+            ]
+        )
+
+        text_body = "\n".join(body_lines)
+        html_body = render_html_from_text(text_body)
+
+        success, err = EmailService.send_email(
+            to_email=recipient,
+            subject=subject,
+            text_body=text_body,
+            html_body=html_body
+        )
+        if not success:
+            logger.warning(
+                "[MarcelWebhook] Failed to send completion email to %s: %s",
+                recipient,
+                err
+            )
+    except Exception as notify_error:
+        logger.warning(
+            "[MarcelWebhook] Error notifying creator for job %s: %s",
+            job.get("id"),
+            notify_error
+        )
 
 
 @router.post("/jobs/{job_id}/sync-status")

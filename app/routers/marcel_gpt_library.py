@@ -574,12 +574,12 @@ async def get_all_assignments(
     # Build query
     query = supabase.table("marcel_gpt_video_assignments") \
         .select(
-            "id, status, created_at, video_id, assigned_to_user_id, "
-            "assigned_by_user_id, notes, viewed_at, completed_at, "
+            "id, status, created_at, video_id, assigned_to, "
+            "assigned_by, notes, viewed_at, completed_at, "
             "video:video_id(id, title, video_url, description, "
             "duration_seconds, thumbnail_url, category), "
-            "assigned_to_user:assigned_to_user_id(id, email, full_name), "
-            "assigned_by_user:assigned_by_user_id(id, email, full_name)"
+            "assigned_to_user:assigned_to(id, email, full_name), "
+            "assigned_by_user:assigned_by(id, email, full_name)"
         ) \
         .eq("tenant_id", tenant_id)
 
@@ -597,15 +597,14 @@ async def get_all_assignments(
     total = count_res.count or 0
 
     # Execute query with pagination
-    res = query \
-        .order("created_at", desc=True) \
-        .range(offset, offset + limit - 1) \
-        .execute()
-
-    if res.error:
-        raise HTTPException(400, str(res.error))
-
-    assignments = res.data or []
+    try:
+        res = query \
+            .order("created_at", desc=True) \
+            .range(offset, offset + limit - 1) \
+            .execute()
+        assignments = res.data or []
+    except Exception as e:
+        raise HTTPException(400, f"Failed to fetch assignments: {str(e)}")
 
     return {
         "data": assignments,

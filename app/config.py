@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     DASHBOARD_BASE_URL: str = "https://www.snsdconsultant.com"
     YOUTUBE_CHANNEL_ID: str | None = None
     YOUTUBE_CHANNEL_HANDLE: str | None = "SnSDConsultants"
+    PINNED_HEYGEN_VOICE_IDS: str | None = None
 
     # Brevo Email Service (SMTP)
     BREVO_SMTP_HOST: str | None = None

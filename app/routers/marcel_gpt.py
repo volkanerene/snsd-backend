@@ -16,6 +16,7 @@ from app.utils.auth import get_current_user, require_permission
 from app.services.heygen_service import get_heygen_service, get_fallback_heygen_service
 from app.services.photo_avatar_service import PhotoAvatarService
 from app.services.script_generation_service import generate_questions_from_script
+from app.config import settings
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -264,24 +265,50 @@ async def list_voices(
             else:
                 raise
 
-        voices = await heygen.list_voices(force_refresh=force_refresh)
+        all_voices = await heygen.list_voices(force_refresh=force_refresh)
+        voice_lookup = {
+            (voice.get("voice_id") or ""): voice for voice in all_voices if voice.get("voice_id")
+        }
+        voices = list(all_voices)
 
         # Apply filters
+        filtered_voices = voices
         if language:
-            voices = [v for v in voices if v.get("language") == language]
+            filtered_voices = [v for v in filtered_voices if v.get("language") == language]
         if gender:
-            voices = [v for v in voices if v.get("gender") == gender]
+            filtered_voices = [v for v in filtered_voices if v.get("gender") == gender]
 
-        # Apply pagination
-        total = len(voices)
-        voices = voices[offset:offset + limit]
+        pinned_ids: List[str] = []
+        if settings.PINNED_HEYGEN_VOICE_IDS:
+            pinned_ids = [
+                vid.strip() for vid in settings.PINNED_HEYGEN_VOICE_IDS.split(",") if vid.strip()
+            ]
 
-        for voice in voices:
+        pinned_records: List[Dict[str, Any]] = []
+        pinned_id_set = set()
+        for vid in pinned_ids:
+            voice = voice_lookup.get(vid)
+            if voice and vid not in pinned_id_set:
+                pinned_records.append(voice)
+                pinned_id_set.add(vid)
+
+        filtered_voices = [
+            voice for voice in filtered_voices
+            if (voice.get("voice_id") or "") not in pinned_id_set
+        ]
+
+        ordered_voices = pinned_records + filtered_voices
+
+        # Apply pagination after pinning
+        total = len(ordered_voices)
+        voices_page = ordered_voices[offset:offset + limit]
+
+        for voice in voices_page:
             _ensure_voice_sample_url(voice)
             vid = voice.get("voice_id")
             voice["is_favorite"] = bool(vid in favorite_ids)
 
-        return {"voices": voices, "count": len(voices), "total": total, "offset": offset, "limit": limit}
+        return {"voices": voices_page, "count": len(voices_page), "total": total, "offset": offset, "limit": limit}
     except Exception as e:
         raise HTTPException(500, f"Failed to fetch voices: {str(e)}")
 
@@ -1241,6 +1268,12 @@ async def generate_video(
                 **heygen_kwargs
             )
         elif engine == "av4":
+            # For photo avatars with vertical images, use portrait dimensions
+            if payload.get("image_key") and not heygen_kwargs.get("width"):
+                # Portrait format for vertical images: 1080x1920
+                heygen_kwargs["width"] = 1080
+                heygen_kwargs["height"] = 1920
+
             heygen_response = await heygen.create_video_av4(
                 input_text=payload["input_text"],
                 avatar_id=avatar_id,

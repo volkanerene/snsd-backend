@@ -121,15 +121,58 @@ class HeyGenService:
                 .execute())
 
             if cached.data:
-                return [item["data"] for item in cached.data]
+                voices = [item["data"] for item in cached.data]
+                # Always ensure volkanerenee is in the list
+                volkanerenee_id = "891bc0ed75cd456db75ac706e82e6b31"
+                if not any(v.get("voice_id") == volkanerenee_id for v in voices):
+                    voices.append({
+                        "voice_id": volkanerenee_id,
+                        "name": "volkanerenee",
+                        "language": "English",
+                        "gender": "male",
+                        "accent": "American",
+                        "age_range": "25-35",
+                        "preview_audio": None,
+                        "support_pause": True,
+                        "emotion_support": False,
+                        "support_interactive_avatar": False,
+                        "support_locale": False
+                    })
+                return voices
 
         # Fetch from API
         response = await self._make_request("GET", "/v2/voices")
         # HeyGen API returns: {'error': None, 'data': {'voices': [...]}}
         voices = response.get("data", {}).get("voices", [])
 
-        # Update cache
+        # Add volkanerenee voice if not already present
+        volkanerenee_id = "891bc0ed75cd456db75ac706e82e6b31"
+        if not any(v.get("voice_id") == volkanerenee_id for v in voices):
+            voices.append({
+                "voice_id": volkanerenee_id,
+                "name": "volkanerenee",
+                "language": "English",
+                "gender": "male",
+                "accent": "American",
+                "age_range": "25-35",
+                "preview_audio": None,
+                "support_pause": True,
+                "emotion_support": False,
+                "support_interactive_avatar": False,
+                "support_locale": False
+            })
+
+        # Enrich voices with sample URLs - map preview_audio to sample_url
         for voice in voices:
+            # HeyGen API returns preview_audio, map it to sample_url for frontend
+            if voice.get("preview_audio"):
+                voice["sample_url"] = voice["preview_audio"]
+            elif not voice.get("sample_url"):
+                # Fallback: construct one if neither exists
+                voice_id = voice.get("voice_id", "")
+                if voice_id:
+                    voice["sample_url"] = f"https://heygen.com/sample-audio/{voice_id}.mp3"
+
             voice_data = {
                 "voice_id": voice["voice_id"],
                 "voice_name": voice.get("name"),
@@ -377,6 +420,15 @@ class HeyGenService:
         if len(input_text) > 1500:
             raise ValueError("Input text must be less than 1500 characters")
 
+        dimension: Dict[str, Any] = {
+            "width": kwargs.get("width", 1920),
+            "height": kwargs.get("height", 1080)
+        }
+
+        # Add orientation if provided
+        if kwargs.get("orientation"):
+            dimension["orientation"] = kwargs["orientation"]
+
         payload: Dict[str, Any] = {
             "video_inputs": [{
                 "character": {
@@ -391,10 +443,7 @@ class HeyGenService:
                     "speed": kwargs.get("speed", 1.0)
                 }
             }],
-            "dimension": {
-                "width": kwargs.get("width", 1920),
-                "height": kwargs.get("height", 1080)
-            },
+            "dimension": dimension,
             "test": kwargs.get("test", False),
         }
 
@@ -460,6 +509,8 @@ class HeyGenService:
             payload["width"] = kwargs["width"]
         if kwargs.get("height"):
             payload["height"] = kwargs["height"]
+        if kwargs.get("orientation"):
+            payload["orientation"] = kwargs["orientation"]
         if kwargs.get("speed"):
             payload["speed"] = kwargs["speed"]
 
