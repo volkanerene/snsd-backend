@@ -1,20 +1,87 @@
 """
 MarcelGPT - HeyGen Video Generation API Routes
 """
-from datetime import datetime
+import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, UploadFile, File
 from httpx import HTTPStatusError
 from pydantic import BaseModel, Field
+from postgrest.exceptions import APIError
 
 from app.db.supabase_client import supabase
 from app.routers.deps import ensure_response
 from app.utils.auth import get_current_user, require_permission
 from app.services.heygen_service import get_heygen_service, get_fallback_heygen_service
 from app.services.photo_avatar_service import PhotoAvatarService
+from app.services.script_generation_service import generate_questions_from_script
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+VIDEO_SYNC_INTERVAL = timedelta(minutes=5)
+_LAST_HEYGEN_SYNC: Dict[str, datetime] = {}
+
+
+def _ensure_voice_sample_url(voice: Dict[str, Any]) -> Optional[str]:
+    """
+    Normalize HeyGen voice payload so callers always receive `sample_url`.
+    HeyGen may return a handful of alternate keys (sample_urls, preview_url, etc.).
+    """
+    if not isinstance(voice, dict):
+        return None
+
+    existing = voice.get("sample_url")
+    if isinstance(existing, str) and existing:
+        return existing
+
+    for key in (
+        "preview_audio_url",
+        "previewAudioUrl",
+        "preview_url",
+        "sampleUrl",
+        "audio_sample_url",
+        "audioSampleUrl",
+        "audio_preview_url",
+    ):
+        candidate = voice.get(key)
+        if isinstance(candidate, str) and candidate:
+            voice["sample_url"] = candidate
+            return candidate
+
+    list_candidates: List[Any] = []
+    for key in (
+        "sample_urls",
+        "sampleUrls",
+        "samples",
+        "audio_samples",
+        "audioSamples",
+        "audio_sample_list",
+        "voice_samples",
+        "sample_list"
+    ):
+        value = voice.get(key)
+        if value:
+            list_candidates.append(value)
+
+    for candidate in list_candidates:
+        if isinstance(candidate, list):
+            iterable = candidate
+        else:
+            iterable = [candidate]
+
+        for entry in iterable:
+            if isinstance(entry, str) and entry:
+                voice["sample_url"] = entry
+                return entry
+            if isinstance(entry, dict):
+                for nested_key in ("sample_url", "sampleUrl", "url", "audio_url", "audioUrl", "preview_url"):
+                    nested_val = entry.get(nested_key)
+                    if isinstance(nested_val, str) and nested_val:
+                        voice["sample_url"] = nested_val
+                        return nested_val
+    return None
 
 
 class AdvancedVideoConfigModel(BaseModel):
@@ -72,6 +139,48 @@ def serialize_photo_avatar_look(record: Dict[str, Any]) -> Dict[str, Any]:
         "createdAt": record.get("created_at"),
         "updatedAt": record.get("updated_at")
     }
+
+
+def serialize_generated_photo_look(record: Dict[str, Any]) -> Dict[str, Any]:
+    base_avatar = (record.get("metadata") or {}).get("base_avatar") or {}
+    return {
+        "id": record.get("id"),
+        "image_key": record.get("image_key"),
+        "image_url": record.get("image_url"),
+        "prompt": record.get("prompt"),
+        "group_id": record.get("group_id"),
+        "avatar_id": record.get("avatar_id") or base_avatar.get("avatar_id"),
+        "created_at": record.get("created_at"),
+        "metadata": record.get("metadata") or {}
+    }
+
+
+def serialize_look_favorite(record: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": record.get("id"),
+        "avatar_id": record.get("avatar_id"),
+        "image_key": record.get("image_key"),
+        "metadata": record.get("metadata") or {},
+        "created_at": record.get("created_at")
+    }
+
+
+def _is_missing_table_error(error: Exception, table_name: str) -> bool:
+    if isinstance(error, APIError) and error.code == "PGRST205":
+        message = (error.message or "").lower()
+        return table_name.lower() in message
+    return False
+
+
+def _raise_missing_table_error(table_name: str):
+    raise HTTPException(
+        500,
+        detail=(
+            f"Supabase table '{table_name}' is missing. "
+            "Apply migrations/026_marcel_favorites.sql to your Supabase project "
+            "and run NOTIFY pgrst, 'reload schema'; then retry."
+        )
+    )
 
 
 # =========================================================================
@@ -134,6 +243,27 @@ async def list_voices(
         raise HTTPException(400, "HeyGen API key not configured for this tenant")
 
     try:
+        favorite_ids = set()
+        try:
+            fav_res = (
+                supabase.table("marcel_voice_favorites")
+                .select("voice_id")
+                .eq("tenant_id", tenant_id)
+                .eq("user_id", user.get("id"))
+                .execute()
+            )
+            favorite_ids = {
+                row["voice_id"] for row in (ensure_response(fav_res) or [])
+            }
+        except APIError as err:
+            if _is_missing_table_error(err, "marcel_voice_favorites"):
+                logger.warning(
+                    "[MarcelGPT] marcel_voice_favorites table missing; apply migration 026_marcel_favorites.sql to enable favorites."
+                )
+                favorite_ids = set()
+            else:
+                raise
+
         voices = await heygen.list_voices(force_refresh=force_refresh)
 
         # Apply filters
@@ -145,6 +275,11 @@ async def list_voices(
         # Apply pagination
         total = len(voices)
         voices = voices[offset:offset + limit]
+
+        for voice in voices:
+            _ensure_voice_sample_url(voice)
+            vid = voice.get("voice_id")
+            voice["is_favorite"] = bool(vid in favorite_ids)
 
         return {"voices": voices, "count": len(voices), "total": total, "offset": offset, "limit": limit}
     except Exception as e:
@@ -482,6 +617,27 @@ class GeneratePhotoAvatarLookRequest(BaseModel):
     pose: str = Field(default="half_body", description="Pose: 'half_body', 'close_up', 'full_body'")
 
 
+class SaveGeneratedPhotoLookRequest(BaseModel):
+    image_key: str
+    image_url: Optional[str] = None
+    prompt: Optional[str] = None
+    group_id: Optional[str] = None
+    avatar_id: Optional[str] = None
+    avatar_name: Optional[str] = None
+    avatar_gender: Optional[str] = None
+    avatar_preview_url: Optional[str] = None
+
+
+class VoiceFavoriteRequest(BaseModel):
+    voice_id: str
+
+
+class LookFavoriteRequest(BaseModel):
+    avatar_id: Optional[str] = None
+    image_key: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+
 @router.post("/photo-avatars/looks/generate")
 async def generate_photo_avatar_look(
     payload: GeneratePhotoAvatarLookRequest,
@@ -625,6 +781,265 @@ async def get_photo_avatar_generation_status(
         import sys
         print(f"[MarcelGPT] Error checking generation status: {str(e)}", file=sys.stderr, flush=True)
         raise HTTPException(500, f"Failed to check generation status: {str(e)}")
+
+
+@router.get("/photo-avatars/generated")
+async def list_generated_photo_looks(
+    user=Depends(get_current_user)
+):
+    """List saved/generated photo looks for the current tenant."""
+    require_permission(user, "marcel_gpt.access")
+
+    tenant_id = user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(400, "User not assigned to a tenant")
+
+    res = (
+        supabase.table("photo_avatar_generated_images")
+        .select("*")
+        .eq("tenant_id", tenant_id)
+        .order("created_at", desc=True)
+        .execute()
+    )
+
+    records = ensure_response(res) or []
+    looks = [serialize_generated_photo_look(row) for row in records]
+    return {"looks": looks, "count": len(looks)}
+
+
+@router.post("/photo-avatars/generated")
+async def save_generated_photo_look(
+    payload: SaveGeneratedPhotoLookRequest,
+    user=Depends(get_current_user)
+):
+    """Persist a generated photo avatar look so it can be reused later."""
+    require_permission(user, "marcel_gpt.manage_presets")
+
+    tenant_id = user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(400, "User not assigned to a tenant")
+
+    metadata = {
+        "base_avatar": {
+            "avatar_id": payload.avatar_id,
+            "avatar_name": payload.avatar_name,
+            "gender": payload.avatar_gender,
+            "preview_image_url": payload.avatar_preview_url
+        }
+    }
+
+    upsert_payload = {
+        "tenant_id": tenant_id,
+        "user_id": user.get("id"),
+        "group_id": payload.group_id,
+        "image_key": payload.image_key,
+        "image_url": payload.image_url,
+        "prompt": payload.prompt,
+        "avatar_id": payload.avatar_id,
+        "metadata": metadata
+    }
+
+    res = (
+        supabase.table("photo_avatar_generated_images")
+        .upsert(upsert_payload, on_conflict="tenant_id,image_key")
+        .execute()
+    )
+
+    records = ensure_response(res)
+    record = records[0] if isinstance(records, list) else records
+    return {"look": serialize_generated_photo_look(record)}
+
+
+@router.delete("/photo-avatars/generated/{look_id}")
+async def delete_generated_photo_look(
+    look_id: str,
+    user=Depends(get_current_user)
+):
+    """Delete a saved generated look."""
+    require_permission(user, "marcel_gpt.manage_presets")
+
+    tenant_id = user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(400, "User not assigned to a tenant")
+
+    supabase.table("photo_avatar_generated_images") \
+        .delete() \
+        .eq("tenant_id", tenant_id) \
+        .eq("id", look_id) \
+        .execute()
+
+    return {"success": True}
+
+
+@router.get("/favorites/voices")
+async def list_voice_favorites(user=Depends(get_current_user)):
+    require_permission(user, "marcel_gpt.access")
+
+    tenant_id = user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(400, "User not assigned to a tenant")
+
+    try:
+        res = (
+            supabase.table("marcel_voice_favorites")
+            .select("voice_id")
+            .eq("tenant_id", tenant_id)
+            .eq("user_id", user.get("id"))
+            .execute()
+        )
+    except APIError as err:
+        if _is_missing_table_error(err, "marcel_voice_favorites"):
+            logger.warning(
+                "[MarcelGPT] marcel_voice_favorites table missing; returning empty favorites list."
+            )
+            return {"favorites": []}
+        raise
+
+    records = ensure_response(res) or []
+    favorites = [row["voice_id"] for row in records]
+    return {"favorites": favorites}
+
+
+@router.post("/favorites/voices")
+async def add_voice_favorite(
+    payload: VoiceFavoriteRequest,
+    user=Depends(get_current_user)
+):
+    require_permission(user, "marcel_gpt.access")
+
+    tenant_id = user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(400, "User not assigned to a tenant")
+
+    try:
+        supabase.table("marcel_voice_favorites") \
+            .upsert({
+                "tenant_id": tenant_id,
+                "user_id": user.get("id"),
+                "voice_id": payload.voice_id
+            }, on_conflict="tenant_id,user_id,voice_id") \
+            .execute()
+    except APIError as err:
+        if _is_missing_table_error(err, "marcel_voice_favorites"):
+            _raise_missing_table_error("marcel_voice_favorites")
+        raise HTTPException(500, f"Failed to save voice favorite: {err.message}")
+
+    return {"success": True}
+
+
+@router.delete("/favorites/voices/{voice_id}")
+async def delete_voice_favorite(
+    voice_id: str,
+    user=Depends(get_current_user)
+):
+    require_permission(user, "marcel_gpt.access")
+
+    tenant_id = user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(400, "User not assigned to a tenant")
+
+    try:
+        supabase.table("marcel_voice_favorites") \
+            .delete() \
+            .eq("tenant_id", tenant_id) \
+            .eq("user_id", user.get("id")) \
+            .eq("voice_id", voice_id) \
+            .execute()
+    except APIError as err:
+        if _is_missing_table_error(err, "marcel_voice_favorites"):
+            _raise_missing_table_error("marcel_voice_favorites")
+        raise HTTPException(500, f"Failed to remove voice favorite: {err.message}")
+
+    return {"success": True}
+
+
+@router.get("/favorites/looks")
+async def list_look_favorites(user=Depends(get_current_user)):
+    require_permission(user, "marcel_gpt.access")
+
+    tenant_id = user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(400, "User not assigned to a tenant")
+
+    try:
+        res = (
+            supabase.table("marcel_look_favorites")
+            .select("*")
+            .eq("tenant_id", tenant_id)
+            .eq("user_id", user.get("id"))
+            .order("created_at", desc=True)
+            .execute()
+        )
+    except APIError as err:
+        if _is_missing_table_error(err, "marcel_look_favorites"):
+            logger.warning(
+                "[MarcelGPT] marcel_look_favorites table missing; returning empty favorites list."
+            )
+            return {"favorites": []}
+        raise
+    records = ensure_response(res) or []
+    favorites = [serialize_look_favorite(row) for row in records]
+    return {"favorites": favorites}
+
+
+@router.post("/favorites/looks")
+async def add_look_favorite(
+    payload: LookFavoriteRequest,
+    user=Depends(get_current_user)
+):
+    require_permission(user, "marcel_gpt.access")
+
+    if not payload.avatar_id and not payload.image_key:
+        raise HTTPException(400, "avatar_id or image_key is required")
+
+    tenant_id = user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(400, "User not assigned to a tenant")
+
+    upsert_conflict = "tenant_id,user_id,avatar_id" if payload.avatar_id else "tenant_id,user_id,image_key"
+
+    try:
+        supabase.table("marcel_look_favorites") \
+            .upsert({
+                "tenant_id": tenant_id,
+                "user_id": user.get("id"),
+                "avatar_id": payload.avatar_id,
+                "image_key": payload.image_key,
+                "metadata": payload.metadata or {}
+            }, on_conflict=upsert_conflict) \
+            .execute()
+    except APIError as err:
+        if _is_missing_table_error(err, "marcel_look_favorites"):
+            _raise_missing_table_error("marcel_look_favorites")
+        raise HTTPException(500, f"Failed to save look favorite: {err.message}")
+
+    return {"success": True}
+
+
+@router.delete("/favorites/looks/{favorite_id}")
+async def delete_look_favorite(
+    favorite_id: str,
+    user=Depends(get_current_user)
+):
+    require_permission(user, "marcel_gpt.access")
+
+    tenant_id = user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(400, "User not assigned to a tenant")
+
+    try:
+        supabase.table("marcel_look_favorites") \
+            .delete() \
+            .eq("tenant_id", tenant_id) \
+            .eq("user_id", user.get("id")) \
+            .eq("id", favorite_id) \
+            .execute()
+    except APIError as err:
+        if _is_missing_table_error(err, "marcel_look_favorites"):
+            _raise_missing_table_error("marcel_look_favorites")
+        raise HTTPException(500, f"Failed to remove look favorite: {err.message}")
+
+    return {"success": True}
 
 
 @router.post("/presets")
@@ -779,6 +1194,14 @@ async def generate_video(
     callback_url = f"{settings.API_URL}/marcel-gpt/webhook"
 
     # Create job record first
+    training_questions: List[Dict[str, Any]] = []
+    try:
+        question_result = generate_questions_from_script(payload["input_text"])
+        if question_result.get("success"):
+            training_questions = question_result.get("questions") or []
+    except Exception as question_error:
+        print(f"[MarcelGPT] Training question generation failed: {question_error}")
+
     job_data = {
         "tenant_id": tenant_id,
         "user_id": user_id,
@@ -788,6 +1211,7 @@ async def generate_video(
         "status": "pending",
         "input_text": payload["input_text"],
         "input_config": payload.get("config", {}),
+        "training_questions": training_questions
     }
 
     job_res = supabase.table("video_jobs").insert(job_data).execute()
@@ -867,6 +1291,164 @@ async def generate_video(
 
 
 # =========================================================================
+# HeyGen Sync Helpers
+# =========================================================================
+
+async def _sync_recent_heygen_videos(tenant_id: str, heygen_service, user_id: str):
+    """Import recently generated HeyGen videos so the library stays in sync."""
+    now = datetime.now(timezone.utc)
+    last_sync = _LAST_HEYGEN_SYNC.get(tenant_id)
+    if last_sync and (now - last_sync) < VIDEO_SYNC_INTERVAL:
+        return
+
+    try:
+        response = await heygen_service.list_videos(limit=20, offset=0)
+        videos = response.get("data", {}).get("videos", [])
+
+        for video in videos:
+            video_id = video.get("video_id")
+            if not video_id:
+                continue
+
+            status = (video.get("status") or '').lower() or 'completed'
+            created_ts = video.get("created_at")
+            created_at = None
+            if isinstance(created_ts, (int, float)):
+                created_at = datetime.fromtimestamp(created_ts, timezone.utc)
+
+            existing = (
+                supabase.table("video_jobs")
+                .select("id")
+                .eq("heygen_job_id", video_id)
+                .limit(1)
+                .execute()
+            )
+
+            if existing.data:
+                job_id = existing.data[0]["id"]
+                supabase.table("video_jobs") \
+                    .update({
+                        "status": status,
+                        "completed_at": created_at.isoformat() if created_at and status == "completed" else None
+                    }) \
+                    .eq("id", job_id) \
+                    .execute()
+                continue
+
+            insert_payload = {
+                "tenant_id": tenant_id,
+                "user_id": user_id,
+                "title": video.get("video_title") or video_id,
+                "engine": "av4",
+                "status": status,
+                "heygen_job_id": video_id,
+                "input_text": "Imported from HeyGen dashboard",
+                "input_config": {"source": "heygen_import"},
+                "queued_at": created_at.isoformat() if created_at else None,
+                "created_at": created_at.isoformat() if created_at else None,
+                "completed_at": created_at.isoformat() if created_at and status == "completed" else None
+            }
+
+            job_insert = supabase.table("video_jobs").insert(insert_payload).execute()
+            job_row = ensure_response(job_insert)[0]
+
+            if status == "completed":
+                video_url = await _fetch_heygen_video_url(heygen_service, video_id)
+                thumbnail_url = (
+                    video.get("thumbnail_url")
+                    or video.get("cover_url")
+                    or video.get("preview_image_url")
+                )
+                duration_seconds = video.get("duration") or video.get("video_duration")
+                if video_url:
+                    supabase.table("video_artifacts").insert({
+                        "job_id": job_row["id"],
+                        "heygen_url": video_url,
+                        "storage_key": video_url,
+                        "signed_url": video_url,
+                        "duration": duration_seconds,
+                        "thumbnail_url": thumbnail_url,
+                        "meta": {
+                            "source": "heygen_sync"
+                        },
+                        "created_at": now.isoformat()
+                    }).execute()
+
+        _LAST_HEYGEN_SYNC[tenant_id] = now
+
+    except Exception as sync_error:
+        print(f"[MarcelGPT] Failed to sync HeyGen videos: {sync_error}")
+
+
+async def _fetch_heygen_video_url(heygen_service, video_id: str) -> Optional[str]:
+    try:
+        status_response = await heygen_service.get_video_status(video_id)
+        return status_response.get("data", {}).get("video_url")
+    except Exception as fetch_error:
+        print(f"[MarcelGPT] Could not fetch video URL for {video_id}: {fetch_error}")
+        return None
+
+
+async def _populate_missing_artifacts(jobs: List[Dict[str, Any]], heygen_service, tenant_id: str, user_id: str):
+    """
+    For completed jobs with heygen_job_id but no artifacts, fetch video URL and thumbnail from HeyGen API.
+    This ensures videos generated but not yet synced will have their playback URLs available.
+    """
+    if not heygen_service:
+        return
+
+    for job in jobs:
+        # Skip if already has artifacts
+        if job.get("artifacts") and len(job.get("artifacts", [])) > 0:
+            continue
+
+        # Skip if no heygen_job_id
+        heygen_job_id = job.get("heygen_job_id")
+        if not heygen_job_id:
+            continue
+
+        # Skip if not completed
+        if job.get("status") != "completed":
+            continue
+
+        try:
+            print(f"[MarcelGPT] Fetching missing artifacts for job {job['id']} (HeyGen ID: {heygen_job_id})")
+            status_response = await heygen_service.get_video_status(heygen_job_id)
+            data = status_response.get("data", {})
+
+            video_url = data.get("video_url")
+            thumbnail_url = data.get("thumbnail_url") or data.get("cover_url")
+            duration = data.get("duration")
+
+            if video_url:
+                print(f"[MarcelGPT] Found video URL for job {job['id']}: {video_url[:50]}...")
+
+                # Create artifact record in database
+                artifact_insert = supabase.table("video_artifacts").insert({
+                    "job_id": job["id"],
+                    "heygen_url": video_url,
+                    "storage_key": video_url,
+                    "signed_url": video_url,
+                    "duration": duration,
+                    "thumbnail_url": thumbnail_url,
+                    "meta": {
+                        "source": "heygen_sync_missing"
+                    },
+                    "created_at": datetime.now(timezone.utc).isoformat()
+                }).execute()
+
+                artifact_data = ensure_response(artifact_insert)
+                if artifact_data:
+                    job["artifacts"] = artifact_data
+                    print(f"[MarcelGPT] Successfully populated artifact for job {job['id']}")
+            else:
+                print(f"[MarcelGPT] No video URL found for job {job['id']}")
+
+        except Exception as e:
+            print(f"[MarcelGPT] Error populating artifacts for job {job['id']}: {e}")
+
+
+# =========================================================================
 # Job Management Endpoints
 # =========================================================================
 
@@ -883,6 +1465,10 @@ async def list_jobs(
     tenant_id = user.get("tenant_id")
     if not tenant_id:
         raise HTTPException(400, "User not assigned to a tenant")
+
+    heygen = get_heygen_service(tenant_id)
+    if heygen:
+        await _sync_recent_heygen_videos(tenant_id, heygen, user.get("id"))
 
     query = supabase.table("video_jobs") \
         .select("*, video_artifacts(*)") \
@@ -902,7 +1488,32 @@ async def list_jobs(
         if "video_artifacts" in job:
             job["artifacts"] = job.pop("video_artifacts")
 
+    # Populate missing artifacts for completed jobs that don't have them yet
+    if heygen:
+        await _populate_missing_artifacts(jobs, heygen, tenant_id, user.get("id"))
+
     return {"jobs": jobs, "count": len(jobs) if jobs else 0}
+
+
+@router.get("/heygen/videos")
+async def list_raw_heygen_videos(
+    user=Depends(get_current_user),
+    limit: int = Query(10, ge=1, le=50),
+    offset: int = Query(0, ge=0)
+):
+    """Expose HeyGen's native video.list response for debugging."""
+    require_permission(user, "modules.access_marcel_gpt")
+
+    tenant_id = user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(400, "User not assigned to a tenant")
+
+    heygen = get_heygen_service(tenant_id)
+    if not heygen:
+        raise HTTPException(400, "HeyGen API key not configured for this tenant")
+
+    response = await heygen.list_videos(limit=limit, offset=offset)
+    return response.get("data", {})
 
 
 @router.get("/jobs/{job_id}")
@@ -1288,44 +1899,67 @@ async def generate_script_from_topic(
 
 
 @router.post("/scripts/from-pdf")
-async def generate_script_from_pdf(
-    file: UploadFile = File(...),
+async def generate_script_from_documents(
+    files: List[UploadFile] = File(...),
     user=Depends(get_current_user),
 ):
-    """Generate a video script from a PDF file"""
+    """
+    Generate a video script from uploaded documents.
+    Supports PDF, PPT/PPTX, and image files (PNG/JPG).
+    """
     require_permission(user, "marcel_gpt.access")
 
     from app.services.script_generation_service import (
-        generate_script_from_pdf,
-        _extract_text_from_pdf
+        generate_script_from_material,
+        extract_text_from_document
     )
 
+    if not files:
+        raise HTTPException(400, "Please upload at least one document")
+
+    if len(files) > 5:
+        raise HTTPException(400, "You can upload up to 5 documents at a time")
+
     try:
-        # Read PDF file
-        pdf_bytes = await file.read()
+        extracted_chunks: List[str] = []
 
-        if not pdf_bytes:
-            raise HTTPException(400, "PDF file is empty")
+        for upload in files:
+            file_bytes = await upload.read()
+            if not file_bytes:
+                continue
 
-        # Extract text from PDF
-        pdf_text = _extract_text_from_pdf(pdf_bytes)
+            try:
+                text = await extract_text_from_document(
+                    upload.filename or "document",
+                    upload.content_type,
+                    file_bytes
+                )
+            except ValueError as ve:
+                raise HTTPException(400, str(ve))
 
-        if not pdf_text.strip():
-            raise HTTPException(400, "Could not extract text from PDF")
+            if not text.strip():
+                continue
 
-        # Generate script
-        result = await generate_script_from_pdf(pdf_text)
+            extracted_chunks.append(
+                f"Document: {upload.filename or 'Unnamed Document'}\n{text.strip()}"
+            )
+
+        if not extracted_chunks:
+            raise HTTPException(400, "Could not extract text from the uploaded documents")
+
+        combined_material = "\n\n".join(extracted_chunks)
+        result = await generate_script_from_material(combined_material)
 
         if not result.get("success"):
-            raise HTTPException(500, result.get("error", "Failed to generate script from PDF"))
+            raise HTTPException(500, result.get("error", "Failed to generate script from documents"))
 
-        return {**result, "filename": file.filename}
+        return {**result, "documentsProcessed": len(extracted_chunks)}
 
     except HTTPException:
         raise
     except Exception as e:
-        print(f"[PDF Script Gen] Error: {str(e)}")
-        raise HTTPException(500, f"Error processing PDF: {str(e)}")
+        print(f"[Document Script Gen] Error: {str(e)}")
+        raise HTTPException(500, f"Error processing documents: {str(e)}")
 
 
 @router.post("/scripts/from-incident")
