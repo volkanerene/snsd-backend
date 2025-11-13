@@ -615,6 +615,184 @@ async def get_all_assignments(
     }
 
 
+@router.post("/submit-quiz")
+async def submit_quiz(
+    payload: dict = Body(...),
+    user=Depends(get_current_user)
+):
+    """
+    Submit quiz answers and get scored results
+    Stores answers and calculates score using AI evaluation for text answers
+    """
+    tenant_id = user.get("tenant_id")
+    user_id = user.get("id")
+
+    if not tenant_id:
+        raise HTTPException(400, "User not assigned to a tenant")
+
+    assignment_id = payload.get("assignment_id")
+    video_id = payload.get("video_id")
+    answers = payload.get("answers", [])
+
+    if not assignment_id or not video_id or not answers:
+        raise HTTPException(400, "Missing required fields: assignment_id, video_id, answers")
+
+    try:
+        # Get the assignment and video to access training questions
+        assignment_res = supabase.table("marcel_gpt_video_assignments") \
+            .select("*") \
+            .eq("id", assignment_id) \
+            .eq("tenant_id", tenant_id) \
+            .limit(1) \
+            .execute()
+
+        assignment_data = ensure_response(assignment_res)
+        if not assignment_data:
+            raise HTTPException(404, "Assignment not found")
+
+        # Get video job with training questions
+        video_res = supabase.table("video_jobs") \
+            .select("training_questions") \
+            .eq("id", video_id) \
+            .eq("tenant_id", tenant_id) \
+            .limit(1) \
+            .execute()
+
+        video_data = ensure_response(video_res)
+        if not video_data:
+            raise HTTPException(404, "Video not found")
+
+        training_questions = video_data[0].get("training_questions", [])
+
+        # Score the answers
+        from app.services.quiz_scoring_service import QuizScoringService
+        scoring_service = QuizScoringService()
+        scoring_result = await scoring_service.score_answers(answers, training_questions)
+
+        score = scoring_result.get("score", 0)
+        answered_questions = scoring_result.get("answers_with_scores", [])
+
+        # Store each answer in database
+        for answer_data in answered_questions:
+            answer_record = {
+                "tenant_id": tenant_id,
+                "assignment_id": assignment_id,
+                "user_id": user_id,
+                "video_id": video_id,
+                "question_index": answer_data.get("question_index"),
+                "question_text": answer_data.get("question_text"),
+                "question_type": answer_data.get("type"),
+                "user_answer": answer_data.get("user_answer"),
+                "correct_answer": str(answer_data.get("correct_answer")),
+                "is_correct": answer_data.get("is_correct"),
+                "ai_score": answer_data.get("ai_score"),
+                "points_earned": answer_data.get("points_earned")
+            }
+
+            supabase.table("video_quiz_answers").insert(answer_record).execute()
+
+        # Update assignment with quiz completion
+        update_res = supabase.table("marcel_gpt_video_assignments") \
+            .update({
+                "status": "completed",
+                "completed_at": "now()",
+                "quiz_completed_at": "now()",
+                "quiz_score": score
+            }) \
+            .eq("id", assignment_id) \
+            .execute()
+
+        ensure_response(update_res)
+
+        print(f"[MarcelGPT] Quiz submitted for assignment {assignment_id}: Score {score}%")
+
+        return {
+            "success": True,
+            "score": score,
+            "answers": answered_questions
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[MarcelGPT] Error submitting quiz: {str(e)}")
+        raise HTTPException(500, f"Failed to submit quiz: {str(e)}")
+
+
+@router.get("/quiz-responses")
+async def get_quiz_responses(
+    user=Depends(get_current_user),
+    assignment_id: Optional[str] = Query(None),
+    video_id: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0)
+):
+    """
+    Get quiz responses (admin view)
+    Shows all submitted quiz answers with scores
+    """
+    require_library_admin(user)
+    require_permission(user, "marcel_gpt.view_library")
+
+    tenant_id = user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(400, "User not assigned to a tenant")
+
+    try:
+        # Build query
+        query = supabase.table("video_quiz_answers") \
+            .select(
+                "id, question_index, question_text, question_type, user_answer, "
+                "correct_answer, is_correct, ai_score, points_earned, created_at, "
+                "assignment:assignment_id(id, status, created_at), "
+                "user:user_id(id, email, full_name), "
+                "video:video_id(id, title)"
+            ) \
+            .eq("tenant_id", tenant_id)
+
+        if assignment_id:
+            query = query.eq("assignment_id", assignment_id)
+        if video_id:
+            query = query.eq("video_id", video_id)
+
+        # Get total count
+        count_res = supabase.table("video_quiz_answers") \
+            .select("id", count="exact") \
+            .eq("tenant_id", tenant_id)
+
+        if assignment_id:
+            count_res = count_res.eq("assignment_id", assignment_id)
+        if video_id:
+            count_res = count_res.eq("video_id", video_id)
+
+        count_res = count_res.execute()
+        total = count_res.count or 0
+
+        # Execute query with pagination
+        res = query \
+            .order("created_at", desc=True) \
+            .range(offset, offset + limit - 1) \
+            .execute()
+
+        if res.error:
+            raise HTTPException(400, str(res.error))
+
+        responses = res.data or []
+
+        return {
+            "data": responses,
+            "total": total,
+            "offset": offset,
+            "limit": limit
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[MarcelGPT] Error fetching quiz responses: {str(e)}")
+        raise HTTPException(500, f"Failed to fetch quiz responses: {str(e)}")
+
+
 # =========================================================================
 # Helper Functions
 # =========================================================================
@@ -641,7 +819,7 @@ async def send_assignment_emails(workers: List[dict], videos: List[dict], assign
 {video_titles}
 
 Videoları görüntülemek için lütfen platformda oturum açın:
-https://app.snsdconsultant.com/dashboard/marcel-gpt/library?tab=assigned
+https://www.snsdconsultant.com/dashboard/marcel-gpt/library?tab=assigned
 
 İyi çalışmalar,
 SnSD Consultants"""

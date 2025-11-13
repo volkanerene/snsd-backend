@@ -572,7 +572,7 @@ def _notify_supervisor_submission(
         evaluation_period = submission.get("evaluation_period") or "current period"
         submission_id = submission.get("id")
         submitted_at = submission.get("submitted_at") or datetime.now(timezone.utc).isoformat()
-        dashboard_base = getattr(settings, "DASHBOARD_BASE_URL", None) or "https://app.snsdconsultant.com"
+        dashboard_base = getattr(settings, "DASHBOARD_BASE_URL", None) or "https://www.snsdconsultant.com"
         frm32_link = f"{dashboard_base.rstrip('/')}/dashboard/evren-gpt/frm32?submission={submission_id}"
 
         for supervisor in supervisors:

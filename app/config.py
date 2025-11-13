@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     API_BASE_URL: str = "https://api.snsdconsultant.com"  # API base URL for N8N callbacks
     N8N_WEBHOOK_URL: str | None = None  # N8N webhook for FRM32 AI scoring
     PORT: int | None = 8000
-    DASHBOARD_BASE_URL: str = "https://app.snsdconsultant.com"
+    DASHBOARD_BASE_URL: str = "https://www.snsdconsultant.com"
     YOUTUBE_CHANNEL_ID: str | None = None
     YOUTUBE_CHANNEL_HANDLE: str | None = "SnSDConsultants"
 
