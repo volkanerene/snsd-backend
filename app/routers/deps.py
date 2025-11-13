@@ -48,6 +48,17 @@ def check_permission(user: dict, required_role_id: int):
         raise HTTPException(403, f"Insufficient permissions (required role_id <= {required_role_id})")
 
 
+def require_library_admin(user: dict):
+    """
+    MarcelGPT library admin access check.
+    Only Company Admin (role_id 2) and HSE Specialist (role_id 3) can view all library tabs.
+    Other roles can only view "Assigned to me" tab via my-assignments endpoint.
+    """
+    role_id = user.get("role_id")
+    if role_id is None or role_id > 3:
+        raise HTTPException(403, "MarcelGPT library admin access required (Company Admin or HSE Specialist)")
+
+
 def ensure_response(res):
     """
     Supabase response normalizasyonu.

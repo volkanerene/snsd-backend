@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from app.config import settings
 from app.db.supabase_client import supabase
-from app.routers.deps import ensure_response
+from app.routers.deps import ensure_response, require_library_admin
 from app.utils.auth import get_current_user, require_permission
 
 router = APIRouter()
@@ -59,7 +59,8 @@ async def list_premade_videos(
     category: Optional[str] = None,
     is_active: bool = True
 ):
-    """List all premade training videos for the tenant"""
+    """List all premade training videos for the tenant (Library Admins only)"""
+    require_library_admin(user)
     require_permission(user, "marcel_gpt.view_library")
 
     tenant_id = user.get("tenant_id")
@@ -88,7 +89,8 @@ async def get_premade_video(
     video_id: str,
     user=Depends(get_current_user)
 ):
-    """Get a specific premade video"""
+    """Get a specific premade video (Library Admins only)"""
+    require_library_admin(user)
     require_permission(user, "marcel_gpt.view_library")
 
     tenant_id = user.get("tenant_id")
@@ -113,7 +115,8 @@ async def import_premade_video(
     payload: ImportPremadeVideoRequest,
     user=Depends(get_current_user),
 ):
-    """Upsert an external video into the tenant's premade library"""
+    """Upsert an external video into the tenant's premade library (Library Admins only)"""
+    require_library_admin(user)
     require_permission(user, "marcel_gpt.view_library")
 
     tenant_id = user.get("tenant_id")
@@ -235,7 +238,8 @@ async def list_youtube_videos(
     user=Depends(get_current_user),
     limit: int = Query(6, ge=1, le=20)
 ):
-    """Fetch latest YouTube videos for SnSD Consultants channel"""
+    """Fetch latest YouTube videos for SnSD Consultants channel (Library Admins only)"""
+    require_library_admin(user)
     require_permission(user, "marcel_gpt.view_library")
 
     channel_id = settings.YOUTUBE_CHANNEL_ID
@@ -294,29 +298,14 @@ async def list_youtube_videos(
             print(f"[YouTube] Found {len(entries)} entries without namespace")
 
         for entry in entries[:limit]:
-            video_id_elem = entry.find("yt:videoId", ns)
-            if video_id_elem is None:
-                video_id_elem = entry.find("{http://www.youtube.com/xml/schemas/2015}videoId")
+            # Use full namespace URI format for consistency
+            video_id_elem = entry.find("{http://www.youtube.com/xml/schemas/2015}videoId")
+            title_elem = entry.find("{http://www.w3.org/2005/Atom}title")
+            published_elem = entry.find("{http://www.w3.org/2005/Atom}published")
+            link_elem = entry.find("{http://www.w3.org/2005/Atom}link")
+            media_group = entry.find("{http://search.yahoo.com/mrss/}group")
 
-            title_elem = entry.find("atom:title", ns)
-            if title_elem is None:
-                title_elem = entry.find("{http://www.w3.org/2005/Atom}title")
-
-            published_elem = entry.find("atom:published", ns)
-            if published_elem is None:
-                published_elem = entry.find("{http://www.w3.org/2005/Atom}published")
-
-            link_elem = entry.find("atom:link", ns)
-            if link_elem is None:
-                link_elem = entry.find("{http://www.w3.org/2005/Atom}link")
-
-            media_group = entry.find("media:group", ns)
-            if media_group is None:
-                media_group = entry.find("{http://search.yahoo.com/mrss/}group")
-
-            description_elem = media_group.find("media:description", ns) if media_group is not None else None
-            if description_elem is None and media_group is not None:
-                description_elem = media_group.find("{http://search.yahoo.com/mrss/}description")
+            description_elem = media_group.find("{http://search.yahoo.com/mrss/}description") if media_group is not None else None
 
             if not video_id_elem or not title_elem:
                 print(f"[YouTube] Skipping entry: missing video_id_elem={video_id_elem is not None} or title_elem={title_elem is not None}")
@@ -327,11 +316,8 @@ async def list_youtube_videos(
             # Extract thumbnail URL with fallback logic
             thumbnail_url = None
             if media_group is not None:
-                # Try media:thumbnail from media:group
-                thumbnail_elem = media_group.find("media:thumbnail", ns)
-                if thumbnail_elem is None:
-                    thumbnail_elem = media_group.find("{http://search.yahoo.com/mrss/}thumbnail")
-
+                # Try media:thumbnail from media:group using full namespace URI
+                thumbnail_elem = media_group.find("{http://search.yahoo.com/mrss/}thumbnail")
                 if thumbnail_elem is not None:
                     thumbnail_url = thumbnail_elem.get("url")
                     print(f"[YouTube] Found thumbnail from media:thumbnail: {thumbnail_url[:50]}...")
@@ -377,7 +363,9 @@ async def assign_videos_to_workers(
     """
     Assign premade videos to workers
     Sends email notifications to assigned workers
+    (Library Admins only)
     """
+    require_library_admin(user)
     require_permission(user, "marcel_gpt.assign_videos")
 
     tenant_id = user.get("tenant_id")
@@ -538,7 +526,8 @@ async def mark_assignment_completed(
 async def get_assignment_stats(
     user=Depends(get_current_user)
 ):
-    """Get assignment statistics for admins"""
+    """Get assignment statistics for admins (Library Admins only)"""
+    require_library_admin(user)
     require_permission(user, "marcel_gpt.view_library")
 
     tenant_id = user.get("tenant_id")
@@ -569,10 +558,9 @@ async def get_assignment_stats(
 
 async def send_assignment_emails(workers: List[dict], videos: List[dict], assigned_by_name: str):
     """
-    Send email notifications to workers about video assignments
-    This is a placeholder - implement with your email service
+    Send email notifications to workers about video assignments via Brevo SMTP
     """
-    # TODO: Integrate with actual email service (SendGrid, AWS SES, etc.)
+    from app.services.email_service import EmailService, render_html_from_text
 
     for worker in workers:
         email = worker.get("email")
@@ -583,8 +571,7 @@ async def send_assignment_emails(workers: List[dict], videos: List[dict], assign
         video_titles = ", ".join([v['title'] for v in videos])
 
         email_subject = f"Yeni Eğitim Videoları Atandı - {len(videos)} Video"
-        email_body = f"""
-Merhaba {worker.get('full_name', '')},
+        email_body = f"""Merhaba {worker.get('full_name', '')},
 
 {assigned_by_name} tarafından size {len(videos)} adet eğitim videosu atandı:
 
@@ -594,13 +581,19 @@ Videoları görüntülemek için lütfen platformda oturum açın:
 https://app.snsdconsultant.com/dashboard/marcel-gpt/library?tab=assigned
 
 İyi çalışmalar,
-SnSD Consultants
-"""
+SnSD Consultants"""
 
-        # Log the email (for development)
-        print(f"[Email] To: {email}")
-        print(f"[Email] Subject: {email_subject}")
-        print(f"[Email] Body: {email_body}")
+        email_html = render_html_from_text(email_body)
 
-        # TODO: Actually send the email
-        # await email_service.send_email(to=email, subject=email_subject, body=email_body)
+        # Send email via Brevo SMTP
+        success, error_msg = EmailService.send_email(
+            to_email=email,
+            subject=email_subject,
+            text_body=email_body,
+            html_body=email_html
+        )
+
+        if success:
+            print(f"[Email] Successfully sent video assignment email to {email}")
+        else:
+            print(f"[Email] Failed to send email to {email}: {error_msg}")
