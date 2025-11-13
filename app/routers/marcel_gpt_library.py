@@ -3,20 +3,50 @@ Marcel GPT Library - Premade Videos and Worker Assignments
 """
 from datetime import datetime
 from typing import List, Optional
-from fastapi import APIRouter, Body, Depends, HTTPException, BackgroundTasks
+import xml.etree.ElementTree as ET
+import re
+import json
+
+import httpx
+from fastapi import APIRouter, Body, Depends, HTTPException, BackgroundTasks, Query
 from pydantic import BaseModel
 
+from app.config import settings
 from app.db.supabase_client import supabase
 from app.routers.deps import ensure_response
 from app.utils.auth import get_current_user, require_permission
 
 router = APIRouter()
 
+CHANNEL_ID_PATTERN = re.compile(r'["\']channelId["\']\s*:\s*["\'](UC[0-9A-Za-z_\-]{20,})["\']')
+BROWSE_ID_PATTERN = re.compile(r'["\']browseId["\']\s*:\s*["\'](UC[0-9A-Za-z_\-]{20,})["\']')
+EXTERNAL_ID_PATTERN = re.compile(r'["\']externalChannelId["\']\s*:\s*["\'](UC[0-9A-Za-z_\-]{20,})["\']')
+_CHANNEL_HANDLE_CACHE: dict[str, str] = {}
+
 
 class AssignVideosRequest(BaseModel):
     video_ids: List[str]
     worker_ids: List[str]
     notes: Optional[str] = None
+
+
+class ImportPremadeVideoRequest(BaseModel):
+    title: str
+    video_url: str
+    description: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+    duration_seconds: Optional[int] = None
+    category: Optional[str] = "External"
+    tags: Optional[List[str]] = None
+
+
+class YoutubeVideo(BaseModel):
+    video_id: str
+    title: str
+    url: str
+    published_at: str
+    thumbnail_url: Optional[str] = None
+    description: Optional[str] = None
 
 
 # =========================================================================
@@ -76,6 +106,222 @@ async def get_premade_video(
         raise HTTPException(404, "Video not found")
 
     return res.data
+
+
+@router.post("/premade-videos/import")
+async def import_premade_video(
+    payload: ImportPremadeVideoRequest,
+    user=Depends(get_current_user),
+):
+    """Upsert an external video into the tenant's premade library"""
+    require_permission(user, "marcel_gpt.view_library")
+
+    tenant_id = user.get("tenant_id")
+    created_by = user.get("id")
+
+    if not tenant_id:
+        raise HTTPException(400, "User not assigned to a tenant")
+
+    existing = (
+        supabase.table("marcel_gpt_premade_videos")
+        .select("id")
+        .eq("tenant_id", tenant_id)
+        .eq("video_url", payload.video_url)
+        .limit(1)
+        .execute()
+    )
+
+    video_row = None
+    now_payload = {
+        "title": payload.title,
+        "description": payload.description,
+        "video_url": payload.video_url,
+        "thumbnail_url": payload.thumbnail_url,
+        "duration_seconds": payload.duration_seconds,
+        "category": payload.category or "External",
+        "tags": payload.tags,
+        "updated_at": datetime.utcnow().isoformat()
+    }
+
+    if existing.data:
+        video_id = existing.data[0]["id"]
+        res = (
+            supabase.table("marcel_gpt_premade_videos")
+            .update(now_payload)
+            .eq("id", video_id)
+            .eq("tenant_id", tenant_id)
+            .execute()
+        )
+        data = ensure_response(res)
+        video_row = data[0] if isinstance(data, list) and data else data
+    else:
+        insert_payload = {
+            **now_payload,
+            "tenant_id": tenant_id,
+            "created_by": created_by
+        }
+        res = supabase.table("marcel_gpt_premade_videos").insert(insert_payload).execute()
+        data = ensure_response(res)
+        video_row = data[0] if isinstance(data, list) and data else data
+
+    return {"video": video_row}
+
+async def _resolve_channel_id_from_handle(handle: str) -> Optional[str]:
+    """
+    Attempt to resolve a YouTube channel ID from a handle (e.g., @SnSDConsultants)
+    so that feeds continue to work even if the legacy ?user= endpoint is unavailable.
+    """
+    if not handle:
+        return None
+
+    normalized = handle.lstrip("@").strip()
+    if not normalized:
+        return None
+
+    cached = _CHANNEL_HANDLE_CACHE.get(normalized.lower())
+    if cached:
+        return cached
+
+    url = f"https://www.youtube.com/@{normalized}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; SnSDBot/1.0; +https://snsdconsultant.com)"
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=10, headers=headers, follow_redirects=True) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+    except Exception as exc:
+        print(f"[YouTube] Failed to resolve handle {handle}: {exc}")
+        return None
+
+    html = response.text
+    match = (
+        CHANNEL_ID_PATTERN.search(html)
+        or BROWSE_ID_PATTERN.search(html)
+        or EXTERNAL_ID_PATTERN.search(html)
+    )
+
+    if not match:
+        marker = "ytInitialData"
+        if marker in html:
+            start_idx = html.find(marker)
+            json_start = html.find("{", start_idx)
+            json_end = html.find(";</script>", json_start)
+            if json_start != -1 and json_end != -1:
+                blob = html[json_start:json_end]
+                try:
+                    data = json.loads(blob)
+                    data_str = json.dumps(data)
+                    match = (
+                        CHANNEL_ID_PATTERN.search(data_str)
+                        or BROWSE_ID_PATTERN.search(data_str)
+                        or EXTERNAL_ID_PATTERN.search(data_str)
+                    )
+                except Exception as parse_exc:
+                    print(f"[YouTube] Failed to parse ytInitialData JSON: {parse_exc}")
+
+    if match:
+        channel_id = match.group(1)
+        _CHANNEL_HANDLE_CACHE[normalized.lower()] = channel_id
+        return channel_id
+
+    print(f"[YouTube] Could not extract channelId from handle page: {handle}")
+    return None
+
+
+@router.get("/youtube")
+async def list_youtube_videos(
+    user=Depends(get_current_user),
+    limit: int = Query(6, ge=1, le=20)
+):
+    """Fetch latest YouTube videos for SnSD Consultants channel"""
+    require_permission(user, "marcel_gpt.view_library")
+
+    channel_id = settings.YOUTUBE_CHANNEL_ID
+    channel_handle = settings.YOUTUBE_CHANNEL_HANDLE or "SnSDConsultants"
+
+    if not channel_id and not channel_handle:
+        raise HTTPException(400, "YouTube channel not configured")
+
+    resolved_channel_id = channel_id
+    if not resolved_channel_id and channel_handle:
+        resolved_channel_id = await _resolve_channel_id_from_handle(channel_handle)
+
+    handle_for_feed = (channel_handle or "").lstrip("@") or "SnSDConsultants"
+
+    if resolved_channel_id:
+        feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={resolved_channel_id}"
+    else:
+        feed_url = f"https://www.youtube.com/feeds/videos.xml?user={handle_for_feed}"
+
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (compatible; SnSDBot/1.0; +https://snsdconsultant.com)",
+            "Accept": "application/atom+xml"
+        }
+        async with httpx.AsyncClient(timeout=10, headers=headers, follow_redirects=True) as client:
+            response = await client.get(feed_url)
+            response.raise_for_status()
+    except Exception as e:
+        print(f"[YouTube] Failed to fetch feed from {feed_url}: {e}")
+        # Return graceful fallback so UI can still render
+        return {"videos": [], "warning": f"Failed to fetch YouTube feed: {str(e)}"}
+
+    try:
+        ns = {
+            "atom": "http://www.w3.org/2005/Atom",
+            "yt": "http://www.youtube.com/xml/schemas/2015",
+            "media": "http://search.yahoo.com/mrss/"
+        }
+        root = ET.fromstring(response.text)
+        videos: List[YoutubeVideo] = []
+        for entry in root.findall("atom:entry", ns)[:limit]:
+            video_id_elem = entry.find("yt:videoId", ns)
+            title_elem = entry.find("atom:title", ns)
+            published_elem = entry.find("atom:published", ns)
+            link_elem = entry.find("atom:link", ns)
+            media_group = entry.find("media:group", ns)
+            description_elem = media_group.find("media:description", ns) if media_group is not None else None
+
+            if not video_id_elem or not title_elem:
+                continue
+
+            video_id_text = video_id_elem.text
+
+            # Extract thumbnail URL with fallback logic
+            thumbnail_url = None
+            if media_group is not None:
+                # Try media:thumbnail from media:group
+                thumbnail_elem = media_group.find("media:thumbnail", ns)
+                if thumbnail_elem is not None:
+                    thumbnail_url = thumbnail_elem.get("url")
+                    print(f"[YouTube] Found thumbnail from media:thumbnail: {thumbnail_url[:50]}...")
+
+            # Fallback: construct standard YouTube thumbnail URLs
+            if not thumbnail_url and video_id_text:
+                # Try maxresdefault first (highest quality), then fall back to hqdefault
+                thumbnail_url = f"https://i.ytimg.com/vi/{video_id_text}/maxresdefault.jpg"
+                print(f"[YouTube] Using constructed thumbnail: {thumbnail_url}")
+
+            url = link_elem.get("href") if link_elem is not None else f"https://www.youtube.com/watch?v={video_id_text}"
+
+            videos.append(
+                YoutubeVideo(
+                    video_id=video_id_text,
+                    title=title_elem.text,
+                    url=url,
+                    published_at=published_elem.text if published_elem is not None else "",
+                    thumbnail_url=thumbnail_url,
+                    description=description_elem.text if description_elem is not None else None
+                )
+            )
+
+        print(f"[YouTube] Successfully parsed {len(videos)} videos from feed")
+        return {"videos": [video.dict() for video in videos]}
+    except Exception as e:
+        print(f"[YouTube] Error parsing feed: {e}")
+        raise HTTPException(500, f"Failed to parse YouTube feed: {str(e)}")
 
 
 # =========================================================================
@@ -305,7 +551,7 @@ Merhaba {worker.get('full_name', '')},
 {video_titles}
 
 Videoları görüntülemek için lütfen platformda oturum açın:
-https://app.snsdconsultant.com/dashboard/marcel-gpt/my-videos
+https://app.snsdconsultant.com/dashboard/marcel-gpt/library?tab=assigned
 
 İyi çalışmalar,
 SnSD Consultants
