@@ -505,12 +505,13 @@ class HeyGenService:
             payload["avatar_id"] = avatar_id
 
         # Add optional parameters from kwargs
+        # AV4 API accepts: aspect_ratio, width, height
+        if kwargs.get("aspect_ratio"):
+            payload["aspect_ratio"] = kwargs["aspect_ratio"]
         if kwargs.get("width"):
             payload["width"] = kwargs["width"]
         if kwargs.get("height"):
             payload["height"] = kwargs["height"]
-        if kwargs.get("orientation"):
-            payload["orientation"] = kwargs["orientation"]
         if kwargs.get("speed"):
             payload["speed"] = kwargs["speed"]
 
