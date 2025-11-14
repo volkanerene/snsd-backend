@@ -465,22 +465,25 @@ class HeyGenService:
     async def create_video_av4(
         self,
         input_text: str,
-        avatar_id: str,
+        avatar_id: str,  # Not used by AV4 (kept for interface compatibility)
         voice_id: str,
         callback_url: Optional[str] = None,
         video_title: Optional[str] = None,
         **kwargs
     ) -> Dict:
         """
-        Create video using AV4 API (photorealistic avatars)
+        Create video using AV4 API (for saved looks with image_key only)
 
         Args:
             input_text: Text for avatar to speak (script parameter)
-            avatar_id: Avatar ID (must be AV4 compatible) or image_key for photo avatars
+            avatar_id: Not used (kept for compatibility)
             voice_id: Voice ID from catalog
             callback_url: Webhook URL for completion
             video_title: Title for the video (required by HeyGen AV4 API)
-            **kwargs: Additional parameters (image_key for photo avatars, etc.)
+            **kwargs: Additional parameters:
+                - image_key: REQUIRED - For saved looks/photo avatars
+                - width: Video width (default: 1280)
+                - height: Video height (default: 720)
 
         Returns:
             Job response with video_id
@@ -495,19 +498,13 @@ class HeyGenService:
         if video_title:
             payload["video_title"] = video_title
 
-        # For photo avatars, use image_key parameter; for standard avatars use avatar_id
-        # If image_key is explicitly provided in kwargs, use it; otherwise use avatar_id
-        if kwargs.get("image_key"):
-            payload["image_key"] = kwargs["image_key"]
-        else:
-            # Try avatar_id first, but also check if it should be image_key
-            # Photo avatar IDs often have specific patterns, but to be safe, try with image_key as fallback
-            payload["avatar_id"] = avatar_id
+        # AV4 API ONLY accepts image_key (NOT avatar_id for group avatars)
+        if not kwargs.get("image_key"):
+            raise ValueError("AV4 API requires image_key parameter (for saved looks only)")
 
-        # Add optional parameters from kwargs
-        # AV4 API accepts: aspect_ratio, width, height
-        if kwargs.get("aspect_ratio"):
-            payload["aspect_ratio"] = kwargs["aspect_ratio"]
+        payload["image_key"] = kwargs["image_key"]
+
+        # Add dimensions - always include width and height
         if kwargs.get("width"):
             payload["width"] = kwargs["width"]
         if kwargs.get("height"):

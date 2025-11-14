@@ -179,37 +179,68 @@ def _build_incident_script_prompt(
     why_did_it_happen: Optional[str],
     what_did_they_learn: Optional[str],
     ask_yourself_or_crew: Optional[str],
-    similar_incident: Optional[Dict[str, Any]] = None
+    similar_incident: Optional[Dict[str, Any]] = None,
+    process_safety_violations: Optional[str] = None,
+    life_saving_rule_violations: Optional[str] = None,
+    preventive_actions: Optional[str] = None,
+    reference_case: Optional[str] = None
 ) -> str:
-    """Build prompt for incident-based script generation"""
+    """Build prompt for incident-based script generation with 8-part format
+
+    8-Part Structure:
+    1. Introduction
+    2. What happened?
+    3. Why did it happen?
+    4. Reference case from industry
+    5. What should be done to prevent?
+    6. Process Safety Fundamental violation
+    7. Life Saving Rule violation
+    8. Suggestion and Close Out
+    """
 
     similar_incident_text = ""
     if similar_incident:
-        similar_incident_text = f"""
+        similar_incident_text = f"""{similar_incident.get('reference_case_title', similar_incident.get('title', 'Reference Case'))}
+{similar_incident.get('reference_case_description', '')}
+Year: {similar_incident.get('reference_case_year', 'Unknown')}"""
 
-Here's a similar incident from our database for context:
-{similar_incident.get('title', 'Similar Incident')}
-- What happened: {similar_incident.get('what_happened', '')}
-- Why it happened: {similar_incident.get('why_did_it_happen', '')}
-- What we learned: {similar_incident.get('what_did_they_learn', '')}"""
+    reference_case_final = reference_case or similar_incident_text or "N/A"
 
-    return f"""You are a safety training speaker creating a brief safety conversation script based on a real incident in our company.
+    return f"""You are a professional safety training speaker creating an in-depth learning-from-incident video script.
+Your script should follow this exact 8-part structure:
 
-NEW INCIDENT DETAILS:
+1. INTRODUCTION - Engage the audience and introduce the incident topic
+2. WHAT HAPPENED - Describe the current incident in detail
+3. WHY DID IT HAPPEN - Explain root causes and contributing factors
+4. REFERENCE CASE FROM INDUSTRY - Present a similar incident from industry history
+5. WHAT SHOULD BE DONE - List preventive actions taken or recommended
+6. PROCESS SAFETY FUNDAMENTAL VIOLATION - Explain which safety principle was violated
+7. LIFE SAVING RULE VIOLATION - Identify which critical rule was not followed
+8. SUGGESTION AND CLOSE OUT - Conclude with key takeaways and reflection questions
+
+INCIDENT DETAILS:
 What happened: {what_happened}
 Why it happened: {why_did_it_happen or 'N/A'}
-What we can learn: {what_did_they_learn or 'N/A'}{similar_incident_text}
+What we can learn: {what_did_they_learn or 'N/A'}
+Reference case: {reference_case_final}
+Process Safety Fundamentals violated: {process_safety_violations or 'N/A'}
+Life Saving Rules violated: {life_saving_rule_violations or 'N/A'}
+Preventive actions: {preventive_actions or 'N/A'}
 
-Create a natural spoken conversation (NOT a video script with scenes, music, or stage directions).
-Start with: "My team, I want to share something important. We recently had an incident at our company, and I'd like to tell you about a similar situation that happened before..."
+Create a compelling, natural spoken dialogue (NOT a video script with scenes, music, or stage directions).
 
-Then:
-1. Briefly describe the similar incident from our database
-2. Explain what caused it and what we learned
-3. Connect it to the current situation
+Start naturally:
+"Hello, I want to share something important with you today. We recently experienced an incident that taught us valuable lessons about safety..."
 
-Keep it natural, conversational, and sincere. Maximum 1500 characters. No scene descriptions, no stage directions, no reflection questions.
-Write ONLY the spoken dialogue - nothing else."""
+Guidelines:
+- Each section should flow naturally into the next
+- Use conversational, professional tone
+- Include specific details and examples
+- Make it educational and engaging
+- Maximum 3000 characters
+- Write ONLY the spoken dialogue - no scene descriptions, brackets, headings, or meta commentary
+- Every line should sound like someone speaking naturally to an audience
+- Reference the industry case when discussing what happened and why"""
 
 
 async def generate_script_from_topic(topic: str) -> Dict[str, Any]:
@@ -479,11 +510,25 @@ async def generate_script_from_incident(
     why_did_it_happen: Optional[str] = None,
     what_did_they_learn: Optional[str] = None,
     ask_yourself_or_crew: Optional[str] = None,
-    tenant_id: Optional[str] = None
+    tenant_id: Optional[str] = None,
+    process_safety_violations: Optional[str] = None,
+    life_saving_rule_violations: Optional[str] = None,
+    preventive_actions: Optional[str] = None,
+    reference_case: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Generate a video script from incident details.
+    Generate a video script from incident details with 8-part format.
     Optionally finds similar incidents from database for context.
+
+    8-Part Structure:
+    1. Introduction
+    2. What happened?
+    3. Why did it happen?
+    4. Reference case from industry
+    5. What should be done to prevent?
+    6. Process Safety Fundamental violation
+    7. Life Saving Rule violation
+    8. Suggestion and Close Out
     """
     try:
         if not settings.OPENAI_API_KEY:
@@ -514,17 +559,21 @@ async def generate_script_from_incident(
             why_did_it_happen,
             what_did_they_learn,
             ask_yourself_or_crew,
-            similar_incident
+            similar_incident,
+            process_safety_violations,
+            life_saving_rule_violations,
+            preventive_actions,
+            reference_case
         )
 
-        print(f"[Script Gen] Generating incident script...")
+        print(f"[Script Gen] Generating incident script with 8-part format...")
 
         response = client.chat.completions.create(
             model="gpt-4-turbo",
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a safety training speaker. Create natural, conversational dialogue only - no scene descriptions, no stage directions, no visual cues."
+                    "content": "You are a professional safety training speaker. Create natural, conversational dialogue only - no scene descriptions, no stage directions, no visual cues. Follow the 8-part structure exactly as specified in the prompt."
                 },
                 {
                     "role": "user",
@@ -532,7 +581,7 @@ async def generate_script_from_incident(
                 }
             ],
             temperature=0.7,
-            max_tokens=500
+            max_tokens=2000
         )
 
         script = response.choices[0].message.content.strip()

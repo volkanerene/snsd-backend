@@ -1229,6 +1229,13 @@ async def generate_video(
     except Exception as question_error:
         print(f"[MarcelGPT] Training question generation failed: {question_error}")
 
+    # Build input_config with dimensions
+    input_config = {}
+    if payload.get("width"):
+        input_config["width"] = payload["width"]
+    if payload.get("height"):
+        input_config["height"] = payload["height"]
+
     job_data = {
         "tenant_id": tenant_id,
         "user_id": user_id,
@@ -1237,7 +1244,7 @@ async def generate_video(
         "engine": engine,
         "status": "pending",
         "input_text": payload["input_text"],
-        "input_config": payload.get("config", {}),
+        "input_config": input_config,
         "training_questions": training_questions
     }
 
@@ -1249,16 +1256,15 @@ async def generate_video(
         full_callback_url = f"{callback_url}?job_id={job['id']}"
 
         # Call HeyGen API based on engine
-        config = payload.get("config", {})
-
-        # Prepare HeyGen kwargs
-        heygen_kwargs = dict(config)
-
-        # For AV4 engine with photo avatars, pass image_key
-        if engine == "av4" and payload.get("image_key"):
-            heygen_kwargs["image_key"] = payload["image_key"]
+        # Prepare HeyGen kwargs with dimensions (always 1280x720 for landscape videos)
+        heygen_kwargs = {}
+        if payload.get("width"):
+            heygen_kwargs["width"] = payload["width"]
+        if payload.get("height"):
+            heygen_kwargs["height"] = payload["height"]
 
         if engine == "v2":
+            # V2 API: For group avatars with avatar_id (dimensions: 1280x720)
             heygen_response = await heygen.create_video_v2(
                 input_text=payload["input_text"],
                 avatar_id=avatar_id,
@@ -1268,11 +1274,11 @@ async def generate_video(
                 **heygen_kwargs
             )
         elif engine == "av4":
-            # For photo avatars with vertical images, use portrait dimensions
-            if payload.get("image_key") and not heygen_kwargs.get("width"):
-                # Portrait format for vertical images: 1080x1920
-                heygen_kwargs["width"] = 1080
-                heygen_kwargs["height"] = 1920
+            # AV4 API: For saved looks with image_key (dimensions: 1280x720)
+            if payload.get("image_key"):
+                heygen_kwargs["image_key"] = payload["image_key"]
+            else:
+                raise HTTPException(400, "AV4 engine requires image_key for saved looks")
 
             heygen_response = await heygen.create_video_av4(
                 input_text=payload["input_text"],
@@ -1283,7 +1289,7 @@ async def generate_video(
                 **heygen_kwargs
             )
         else:
-            raise HTTPException(400, "Template engine not yet implemented")
+            raise HTTPException(400, f"Unknown engine: {engine}")
 
         # Extract video_id from response
         video_id = heygen_response.get("data", {}).get("video_id")
@@ -1928,6 +1934,10 @@ class GenerateIncidentScriptRequest(BaseModel):
     why_did_it_happen: Optional[str] = None
     what_did_they_learn: Optional[str] = None
     ask_yourself_or_crew: Optional[str] = None
+    process_safety_violations: Optional[str] = None
+    life_saving_rule_violations: Optional[str] = None
+    preventive_actions: Optional[str] = None
+    reference_case: Optional[str] = None
 
 
 @router.post("/scripts/generate")
@@ -2035,7 +2045,11 @@ async def generate_script_from_incident(
         why_did_it_happen=payload.why_did_it_happen,
         what_did_they_learn=payload.what_did_they_learn,
         ask_yourself_or_crew=payload.ask_yourself_or_crew,
-        tenant_id=tenant_id
+        tenant_id=tenant_id,
+        process_safety_violations=payload.process_safety_violations,
+        life_saving_rule_violations=payload.life_saving_rule_violations,
+        preventive_actions=payload.preventive_actions,
+        reference_case=payload.reference_case
     )
 
     if not result.get("success"):
