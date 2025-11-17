@@ -2,11 +2,13 @@
 MarcelGPT - HeyGen Video Generation API Routes
 """
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, UploadFile, File
 from httpx import HTTPStatusError
+import httpx
 from pydantic import BaseModel, Field
 from postgrest.exceptions import APIError
 
@@ -16,6 +18,7 @@ from app.utils.auth import get_current_user, require_permission
 from app.services.heygen_service import get_heygen_service, get_fallback_heygen_service
 from app.services.photo_avatar_service import PhotoAvatarService
 from app.services.script_generation_service import generate_questions_from_script
+from app.services.video_composition_service import get_composition_service
 from app.config import settings
 
 try:
@@ -121,6 +124,23 @@ class CreateLookRequest(BaseModel):
 
     class Config:
         allow_population_by_field_name = True
+
+
+class SceneClipConfig(BaseModel):
+    """Configuration for a scene clip in composition"""
+    path: str  # Local path to the clip
+    start_time: float  # When clip starts in final video (seconds)
+    end_time: float  # When clip ends in final video (seconds)
+    position: Optional[Dict[str, float]] = None  # Optional PiP position {x, y, scale}
+
+
+class VideoCompositionRequest(BaseModel):
+    """Request to compose video with scenes and music"""
+    scene_clips: Optional[List[SceneClipConfig]] = None
+    background_music_path: Optional[str] = None
+    background_music_volume: float = 0.5
+    fade_in: float = 1.0
+    fade_out: float = 1.0
 
 
 def serialize_photo_avatar_look(record: Dict[str, Any]) -> Dict[str, Any]:
@@ -2266,3 +2286,174 @@ TRANSLATED SCRIPT ({language_name}):"""
     except Exception as e:
         print(f"[MarcelGPT] Error creating translated job: {e}")
         raise HTTPException(500, "Failed to create translated video job")
+
+
+@router.post("/videos/{job_id}/compose")
+async def compose_video(
+    job_id: str,
+    payload: VideoCompositionRequest = Body(...),
+    user=Depends(get_current_user),
+):
+    """
+    Compose a video with scene clips and background music
+
+    Request body:
+    {
+        "scene_clips": [
+            {
+                "path": "/path/to/clip.mp4",
+                "start_time": 5.0,
+                "end_time": 15.0,
+                "position": {"x": 0.65, "y": 0.05, "scale": 0.3}
+            }
+        ],
+        "background_music_path": "/path/to/music.mp3",
+        "background_music_volume": 0.5,
+        "fade_in": 1.0,
+        "fade_out": 1.0
+    }
+
+    Returns: Composition job details
+    """
+    require_permission(user, "modules.access_marcel_gpt")
+
+    tenant_id = user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(400, "User not assigned to a tenant")
+
+    # Fetch the video job
+    try:
+        job_res = supabase.table("video_jobs").select("*").eq("id", job_id).eq("tenant_id", tenant_id).execute()
+        jobs = ensure_response(job_res)
+
+        if not jobs:
+            raise HTTPException(404, f"Video job {job_id} not found")
+
+        job = jobs[0]
+    except Exception as e:
+        print(f"[MarcelGPT] Error fetching job: {e}")
+        raise HTTPException(500, "Failed to fetch video job")
+
+    # Get artifacts for the base video
+    try:
+        artifacts_res = supabase.table("video_artifacts").select("*").eq("job_id", job_id).execute()
+        artifacts = ensure_response(artifacts_res)
+
+        if not artifacts:
+            raise HTTPException(404, f"No video artifacts found for job {job_id}")
+
+        primary_artifact = artifacts[0]
+        base_video_url = primary_artifact.get("heygen_url") or primary_artifact.get("signed_url")
+
+        if not base_video_url:
+            raise HTTPException(400, "No video URL available for composition")
+    except Exception as e:
+        print(f"[MarcelGPT] Error fetching artifacts: {e}")
+        raise HTTPException(500, "Failed to fetch video artifacts")
+
+    # Validate scene clips exist
+    if payload.scene_clips:
+        for clip in payload.scene_clips:
+            if not os.path.exists(clip.path):
+                raise HTTPException(400, f"Scene clip not found: {clip.path}")
+
+    # Validate background music exists
+    if payload.background_music_path and not os.path.exists(payload.background_music_path):
+        raise HTTPException(400, "Background music file not found")
+
+    # Create composition job record
+    composition_job = {
+        "job_id": job_id,
+        "tenant_id": tenant_id,
+        "base_video_url": base_video_url,
+        "composition_status": "pending",
+        "scene_count": len(payload.scene_clips) if payload.scene_clips else 0,
+        "has_background_music": bool(payload.background_music_path)
+    }
+
+    try:
+        comp_res = supabase.table("video_compositions").insert(composition_job).execute()
+        composition = ensure_response(comp_res)[0]
+    except Exception as e:
+        print(f"[MarcelGPT] Error creating composition job: {e}")
+        raise HTTPException(500, "Failed to create composition job")
+
+    # Queue composition task asynchronously
+    try:
+        # Update composition status to processing
+        supabase.table("video_compositions").update({"composition_status": "compositing", "started_at": "now()"}).eq("id", composition["id"]).execute()
+
+        # Download base video to temp location
+        import tempfile as tmp
+
+        with tmp.NamedTemporaryFile(suffix=".mp4", delete=False) as temp_base:
+            base_video_path = temp_base.name
+            async with httpx.AsyncClient() as client:
+                async with client.stream("GET", base_video_url) as response:
+                    async for chunk in response.aiter_bytes(chunk_size=8192):
+                        temp_base.write(chunk)
+
+        # Run composition
+        composition_service = get_composition_service()
+        result = await composition_service.compose_video(
+            base_video_url=base_video_url,
+            base_video_path=base_video_path,
+            scene_clips=[clip.dict() for clip in (payload.scene_clips or [])],
+            background_music_path=payload.background_music_path,
+        )
+
+        # Cleanup temp base video
+        try:
+            os.remove(base_video_path)
+        except:
+            pass
+
+        if not result.get("success"):
+            error_msg = result.get("error", "Unknown composition error")
+            supabase.table("video_compositions").update({
+                "composition_status": "failed",
+                "composition_error": error_msg
+            }).eq("id", composition["id"]).execute()
+
+            raise HTTPException(500, f"Composition failed: {error_msg}")
+
+        # Upload composed video to storage
+        output_path = result.get("output_path")
+        if not output_path or not os.path.exists(output_path):
+            raise HTTPException(500, "Composition output not found")
+
+        # For now, store the local path - in production, upload to S3/Spaces
+        final_url = f"file://{output_path}"
+        final_size = os.path.getsize(output_path)
+
+        # Update composition job with results
+        supabase.table("video_compositions").update({
+            "composition_status": "completed",
+            "final_video_url": final_url,
+            "total_duration": result.get("duration"),
+            "completed_at": "now()"
+        }).eq("id", composition["id"]).execute()
+
+        return {
+            "success": True,
+            "composition_id": composition["id"],
+            "job_id": job_id,
+            "status": "completed",
+            "duration": result.get("duration"),
+            "size": result.get("size"),
+            "output_path": output_path,
+            "message": "Video composition completed successfully"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[MarcelGPT] Composition error: {e}")
+        try:
+            supabase.table("video_compositions").update({
+                "composition_status": "failed",
+                "composition_error": str(e)
+            }).eq("id", composition["id"]).execute()
+        except:
+            pass
+        raise HTTPException(500, f"Composition error: {str(e)}")
