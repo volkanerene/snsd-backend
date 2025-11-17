@@ -1,10 +1,11 @@
 """
 MarcelGPT - HeyGen Video Generation API Routes
 """
+import asyncio
 import logging
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Dict, List, Optional, TypeVar
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, UploadFile, File
 from httpx import HTTPStatusError
@@ -31,6 +32,41 @@ logger = logging.getLogger(__name__)
 
 VIDEO_SYNC_INTERVAL = timedelta(minutes=5)
 _LAST_HEYGEN_SYNC: Dict[str, datetime] = {}
+
+# Request timeout constants (in seconds)
+REQUEST_TIMEOUT_AVATAR = 30  # Avatar listing should be fast
+REQUEST_TIMEOUT_VOICES = 30  # Voice listing should be fast
+REQUEST_TIMEOUT_GENERATION = 60  # Video generation API call
+REQUEST_TIMEOUT_COMPOSITION = 600  # FFmpeg composition (10 minutes)
+
+T = TypeVar('T')
+
+async def with_timeout(coro: Awaitable[T], timeout_seconds: float, operation_name: str = "Operation") -> T:
+    """
+    Wrap an async operation with a timeout
+
+    Args:
+        coro: The coroutine to execute
+        timeout_seconds: Maximum seconds to wait
+        operation_name: Description for logging
+
+    Returns:
+        The coroutine result
+
+    Raises:
+        HTTPException: If timeout occurs
+    """
+    try:
+        return await asyncio.wait_for(coro, timeout=timeout_seconds)
+    except asyncio.TimeoutError:
+        logger.error(f"[MarcelGPT] {operation_name} timed out after {timeout_seconds}s")
+        raise HTTPException(
+            504,
+            f"{operation_name} took too long (>{timeout_seconds}s). Please try again."
+        )
+    except Exception as e:
+        logger.error(f"[MarcelGPT] {operation_name} error: {str(e)}")
+        raise
 
 
 def _ensure_voice_sample_url(voice: Dict[str, Any]) -> Optional[str]:
@@ -235,13 +271,17 @@ async def list_avatars(
         raise HTTPException(400, "HeyGen API key not configured for this tenant")
 
     try:
-        avatars = await heygen.list_avatars(force_refresh=force_refresh)
-        import sys
-        print(f"[MarcelGPT] Fetched {len(avatars)} avatars for tenant {tenant_id}", file=sys.stderr, flush=True)
+        avatars = await with_timeout(
+            heygen.list_avatars(force_refresh=force_refresh),
+            REQUEST_TIMEOUT_AVATAR,
+            "Avatar listing"
+        )
+        logger.info(f"[MarcelGPT] Fetched {len(avatars)} avatars for tenant {tenant_id}")
         return {"avatars": avatars, "count": len(avatars), "debug": {"tenant_id": str(tenant_id), "avatar_count": len(avatars), "force_refresh": force_refresh}}
+    except HTTPException:
+        raise
     except Exception as e:
-        import sys
-        print(f"[MarcelGPT] Error fetching avatars: {str(e)}", file=sys.stderr, flush=True)
+        logger.error(f"[MarcelGPT] Error fetching avatars: {str(e)}")
         raise HTTPException(500, f"Failed to fetch avatars: {str(e)}")
 
 
@@ -291,7 +331,11 @@ async def list_voices(
             else:
                 raise
 
-        all_voices = await heygen.list_voices(force_refresh=force_refresh)
+        all_voices = await with_timeout(
+            heygen.list_voices(force_refresh=force_refresh),
+            REQUEST_TIMEOUT_VOICES,
+            "Voice listing"
+        )
         voice_lookup = {
             (voice.get("voice_id") or ""): voice for voice in all_voices if voice.get("voice_id")
         }
@@ -334,8 +378,12 @@ async def list_voices(
             vid = voice.get("voice_id")
             voice["is_favorite"] = bool(vid in favorite_ids)
 
+        logger.info(f"[MarcelGPT] Fetched {len(voices_page)} voices for tenant {tenant_id}")
         return {"voices": voices_page, "count": len(voices_page), "total": total, "offset": offset, "limit": limit}
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.error(f"[MarcelGPT] Error fetching voices: {str(e)}")
         raise HTTPException(500, f"Failed to fetch voices: {str(e)}")
 
 
@@ -1307,13 +1355,17 @@ async def generate_video(
 
         if engine == "v2":
             # V2 API: For group avatars with avatar_id (dimensions: 1280x720)
-            heygen_response = await heygen.create_video_v2(
-                input_text=payload["input_text"],
-                avatar_id=avatar_id,
-                voice_id=payload["voice_id"],
-                callback_url=full_callback_url,
-                title=payload.get("title"),
-                **heygen_kwargs
+            heygen_response = await with_timeout(
+                heygen.create_video_v2(
+                    input_text=payload["input_text"],
+                    avatar_id=avatar_id,
+                    voice_id=payload["voice_id"],
+                    callback_url=full_callback_url,
+                    title=payload.get("title"),
+                    **heygen_kwargs
+                ),
+                REQUEST_TIMEOUT_GENERATION,
+                "HeyGen V2 video generation"
             )
         elif engine == "av4":
             # AV4 API: For saved looks with image_key (dimensions: 1280x720)
@@ -1322,13 +1374,17 @@ async def generate_video(
             else:
                 raise HTTPException(400, "AV4 engine requires image_key for saved looks")
 
-            heygen_response = await heygen.create_video_av4(
-                input_text=payload["input_text"],
-                avatar_id=avatar_id,
-                voice_id=payload["voice_id"],
-                callback_url=full_callback_url,
-                video_title=payload.get("title") or payload.get("video_title"),
-                **heygen_kwargs
+            heygen_response = await with_timeout(
+                heygen.create_video_av4(
+                    input_text=payload["input_text"],
+                    avatar_id=avatar_id,
+                    voice_id=payload["voice_id"],
+                    callback_url=full_callback_url,
+                    video_title=payload.get("title") or payload.get("video_title"),
+                    **heygen_kwargs
+                ),
+                REQUEST_TIMEOUT_GENERATION,
+                "HeyGen AV4 video generation"
             )
         else:
             raise HTTPException(400, f"Unknown engine: {engine}")
@@ -2318,24 +2374,32 @@ TRANSLATED SCRIPT ({language_name}):"""
         # Call HeyGen API to generate translated video
         try:
             if engine == "v2":
-                heygen_response = await heygen.create_video_v2(
-                    input_text=translated_script,
-                    avatar_id=avatar_id,
-                    voice_id=voice_id,
-                    callback_url=full_callback_url,
-                    title=translated_title,
-                    **heygen_kwargs
+                heygen_response = await with_timeout(
+                    heygen.create_video_v2(
+                        input_text=translated_script,
+                        avatar_id=avatar_id,
+                        voice_id=voice_id,
+                        callback_url=full_callback_url,
+                        title=translated_title,
+                        **heygen_kwargs
+                    ),
+                    REQUEST_TIMEOUT_GENERATION,
+                    "Translated video generation (HeyGen V2)"
                 )
             elif engine == "av4":
                 if original_config.get("image_key"):
                     heygen_kwargs["image_key"] = original_config["image_key"]
-                heygen_response = await heygen.create_video_av4(
-                    input_text=translated_script,
-                    avatar_id=avatar_id,
-                    voice_id=voice_id,
-                    callback_url=full_callback_url,
-                    video_title=translated_title,
-                    **heygen_kwargs
+                heygen_response = await with_timeout(
+                    heygen.create_video_av4(
+                        input_text=translated_script,
+                        avatar_id=avatar_id,
+                        voice_id=voice_id,
+                        callback_url=full_callback_url,
+                        video_title=translated_title,
+                        **heygen_kwargs
+                    ),
+                    REQUEST_TIMEOUT_GENERATION,
+                    "Translated video generation (HeyGen AV4)"
                 )
             else:
                 raise Exception(f"Unsupported engine: {engine}")
