@@ -2340,9 +2340,9 @@ TRANSLATED SCRIPT ({language_name}):"""
         # Get original job details to use for video generation
         engine = original_job.get("engine", "v2")
         avatar_id = original_job.get("avatar_id") or original_job.get("image_key")
-        voice_id = original_job.get("voice_id")
+        original_voice_id = original_job.get("voice_id")
 
-        if not avatar_id or not voice_id:
+        if not avatar_id or not original_voice_id:
             # If original job doesn't have avatar/voice, just return job creation response
             # User will need to manually generate from the UI
             return {
@@ -2354,6 +2354,32 @@ TRANSLATED SCRIPT ({language_name}):"""
                 "original_job_id": job_id,
                 "message": f"Translation created. Please select avatar and voice to generate."
             }
+
+        # Find a voice that matches the target language
+        # This ensures the translated video uses the appropriate language-specific voice
+        voice_id = original_voice_id  # Fallback to original voice
+        try:
+            available_voices = await with_timeout(
+                heygen.list_voices(force_refresh=False),
+                REQUEST_TIMEOUT_VOICES,
+                "Voice listing for translation"
+            )
+
+            # Filter voices by target language
+            target_lang_voices = [
+                v for v in available_voices
+                if v.get("language", "").lower() == language_name.lower()
+            ]
+
+            if target_lang_voices:
+                # Use the first available voice for the target language
+                selected_lang_voice = target_lang_voices[0]
+                voice_id = selected_lang_voice.get("voice_id", original_voice_id)
+                logger.info(f"[MarcelGPT] Translation: Using {language_name} voice {voice_id}")
+            else:
+                logger.warning(f"[MarcelGPT] Translation: No voices found for {language_name}, using original voice {original_voice_id}")
+        except Exception as voice_error:
+            logger.warning(f"[MarcelGPT] Translation: Could not fetch voices for language selection: {voice_error}. Using original voice.")
 
         # Build callback URL
         from app.config import settings
@@ -2368,8 +2394,13 @@ TRANSLATED SCRIPT ({language_name}):"""
             heygen_kwargs["height"] = original_config["height"]
         if original_config.get("videoQuality"):
             heygen_kwargs["quality"] = original_config["videoQuality"]
-        # Force target language
+
+        # Force target language for HeyGen
         heygen_kwargs["language"] = target_language
+
+        # IMPORTANT: Force enable subtitles in the target language for translations
+        heygen_kwargs["enable_subtitles"] = True
+        heygen_kwargs["subtitle_language"] = target_language
 
         # Call HeyGen API to generate translated video
         try:
@@ -2424,9 +2455,10 @@ TRANSLATED SCRIPT ({language_name}):"""
                 "title": translated_job["title"],
                 "language": target_language,
                 "language_name": language_name,
+                "voice_id": voice_id,
                 "original_job_id": job_id,
                 "status": "queued",
-                "message": f"Translation started and video generation queued in {language_name}."
+                "message": f"Video translated to {language_name}! Using {language_name} voice with {language_name} subtitles. Video generation queued."
             }
 
         except Exception as generation_error:
