@@ -417,8 +417,8 @@ class HeyGenService:
             "message": "Success"
         }
         """
-        if len(input_text) > 1500:
-            raise ValueError("Input text must be less than 1500 characters")
+        if len(input_text) > 4500:
+            raise ValueError("Input text must be less than 4500 characters")
 
         dimension: Dict[str, Any] = {
             "width": kwargs.get("width", 1920),
@@ -458,6 +458,20 @@ class HeyGenService:
         # Add background if provided
         if kwargs.get("background") is not None:
             payload["video_inputs"][0]["background"] = kwargs["background"]
+
+        # Add quality setting if provided (low, medium, high)
+        if kwargs.get("quality"):
+            payload["quality"] = kwargs["quality"]
+
+        # Add language if provided
+        if kwargs.get("language"):
+            payload["language"] = kwargs["language"]
+
+        # Add subtitle settings if provided
+        if kwargs.get("enable_subtitles"):
+            payload["enable_subtitles"] = kwargs["enable_subtitles"]
+        if kwargs.get("subtitle_language"):
+            payload["subtitle_language"] = kwargs["subtitle_language"]
 
         response = await self._make_request("POST", "/v2/video/generate", data=payload)
         return response
@@ -511,6 +525,20 @@ class HeyGenService:
             payload["height"] = kwargs["height"]
         if kwargs.get("speed"):
             payload["speed"] = kwargs["speed"]
+
+        # Add quality setting if provided (low, medium, high)
+        if kwargs.get("quality"):
+            payload["quality"] = kwargs["quality"]
+
+        # Add language if provided
+        if kwargs.get("language"):
+            payload["language"] = kwargs["language"]
+
+        # Add subtitle settings if provided
+        if kwargs.get("enable_subtitles"):
+            payload["enable_subtitles"] = kwargs["enable_subtitles"]
+        if kwargs.get("subtitle_language"):
+            payload["subtitle_language"] = kwargs["subtitle_language"]
 
         if callback_url:
             payload["webhook_url"] = callback_url

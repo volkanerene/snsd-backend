@@ -206,41 +206,69 @@ Year: {similar_incident.get('reference_case_year', 'Unknown')}"""
 
     reference_case_final = reference_case or similar_incident_text or "N/A"
 
-    return f"""You are a professional safety training speaker creating an in-depth learning-from-incident video script.
-Your script should follow this exact 8-part structure:
+    return f"""You are a safety training speaker. Create a learning-from-incident video script.
+Follow this 8-part structure with SPECIFIC, MEASURABLE details (NOT generic):
 
-1. INTRODUCTION - Engage the audience and introduce the incident topic
-2. WHAT HAPPENED - Describe the current incident in detail
-3. WHY DID IT HAPPEN - Explain root causes and contributing factors
-4. REFERENCE CASE FROM INDUSTRY - Present a similar incident from industry history
-5. WHAT SHOULD BE DONE - List preventive actions taken or recommended
-6. PROCESS SAFETY FUNDAMENTAL VIOLATION - Explain which safety principle was violated
-7. LIFE SAVING RULE VIOLATION - Identify which critical rule was not followed
-8. SUGGESTION AND CLOSE OUT - Conclude with key takeaways and reflection questions
+1. INTRODUCTION (1-2 sentences) - Engage audience and introduce the specific incident topic
 
-INCIDENT DETAILS:
+2. WHAT HAPPENED (3-5 sentences) - Describe EXACTLY what occurred with:
+   - Specific equipment names, serial numbers, or component names (from provided data)
+   - Measurable data ONLY from the incident information - DO NOT invent numbers or specifications
+   - Sequence of events in exact chronological order with times/durations
+   - Specific consequences that are documented (injuries, environmental damage, costs - only if provided)
+
+3. WHY DID IT HAPPEN (2-4 sentences) - Root cause analysis explaining:
+   - The EXACT failure mechanism (not "failure" but "what specifically failed": seal degradation, corrosion, design flaw)
+   - Contributing factors with their specific mechanism (not "maintenance was poor" but "seal was not inspected for <specific degradation>")
+   - The SPECIFIC system or procedure that broke down and how
+
+4. REFERENCE CASE FROM INDUSTRY (3-4 sentences) - MANDATORY FORMAT:
+   - State incident name/platform + year + location (example: "Thistle Field, 1989, North Sea")
+   - MUST explain the SPECIFIC MECHANISM SIMILARITY: "Like [reference incident], this incident also had [EXACT MECHANISM in common]"
+   - Show how the root cause parallels the current incident mechanically
+   - DO NOT use generic phrases like "similar incident" - explain the specific parallel
+   - DO NOT mention current incident by location/name if reference is already clear
+
+5. WHAT SHOULD BE DONE (3-5 sentences) - Preventive actions with MEASURABLE criteria:
+   - Each action MUST follow: [Specific Action] | [Frequency/Timing] | [Acceptance Criteria] | [Verification Method]
+   - Example: "Seal integrity testing every 90 days with <1 ppm leak rate acceptance, documented with supervisor sign-off"
+   - Include equipment specifications, procedures, or design changes
+   - State measurement units and success criteria explicitly
+   - Include competency or training requirements with frequency
+
+6. PROCESS SAFETY FUNDAMENTAL VIOLATION (2-3 sentences) - MANDATORY FORMAT:
+   - State: "[Principle Name] was violated BECAUSE [specific mechanism/action not taken] which caused [outcome]"
+   - Example: "We Respect Hazards was violated BECAUSE the noise signal from seal degradation was not escalated as a hazard warning"
+   - Name the exact principle (e.g., "Verify Before You Act", "Know Your Procedures", "We Respect Hazards")
+   - DO NOT just say "was violated" without the BECAUSE and outcome
+
+7. LIFE SAVING RULE VIOLATION (2-3 sentences) - MANDATORY FORMAT:
+   - State: "[Rule Name] was not followed BECAUSE [specific action that should have occurred but didn't] which resulted in [consequence]"
+   - Example: "Control of Work was not followed BECAUSE the post-revision pressure test was not performed before startup"
+   - Name the exact rule and explain what specific action was missing
+   - DO NOT use generic language like "was not properly implemented"
+
+8. SUGGESTION AND CLOSE OUT (2-3 sentences) - Conclude with:
+   - One specific, actionable key takeaway relevant to the organization
+   - One reflective question for the audience to consider
+
+INCIDENT DATA:
 What happened: {what_happened}
 Why it happened: {why_did_it_happen or 'N/A'}
-What we can learn: {what_did_they_learn or 'N/A'}
-Reference case: {reference_case_final}
-Process Safety Fundamentals violated: {process_safety_violations or 'N/A'}
-Life Saving Rules violated: {life_saving_rule_violations or 'N/A'}
-Preventive actions: {preventive_actions or 'N/A'}
+What we learned: {what_did_they_learn or 'N/A'}
 
-Create a compelling, natural spoken dialogue (NOT a video script with scenes, music, or stage directions).
-
-Start naturally:
-"Hello, I want to share something important with you today. We recently experienced an incident that taught us valuable lessons about safety..."
-
-Guidelines:
-- Each section should flow naturally into the next
-- Use conversational, professional tone
-- Include specific details and examples
-- Make it educational and engaging
-- Maximum 3000 characters
-- Write ONLY the spoken dialogue - no scene descriptions, brackets, headings, or meta commentary
-- Every line should sound like someone speaking naturally to an audience
-- Reference the industry case when discussing what happened and why"""
+CRITICAL RULES - DO NOT BREAK THESE:
+- Write natural spoken dialogue ONLY (no headings, brackets, scene descriptions, no numbered lists)
+- MAXIMUM: 5000 characters (~1300 words)
+- Sound like one person speaking naturally and conversationally
+- EVERY STATEMENT must use PROVIDED data - DO NOT invent numbers, equipment models, or specifications not in the incident information
+- Use specific names, times, and measurements FROM the incident data provided
+- DO NOT use generic phrases: "was violated", "similar incident", "proper procedures", "failure", "poor", "best practices"
+- DO NOT use vague language: use exact mechanism names, specific equipment names from provided data, measurable criteria
+- Reference case MUST include specific mechanism similarity to current incident
+- PSF and LSR sections MUST follow the format: [Principle/Rule] was [violated/not followed] BECAUSE [specific mechanism] [outcome/consequence]
+- All preventive actions MUST have measurable acceptance criteria and verification methods
+- DO NOT exceed 2500 characters"""
 
 
 async def generate_script_from_topic(topic: str) -> Dict[str, Any]:
@@ -569,7 +597,7 @@ async def generate_script_from_incident(
         print(f"[Script Gen] Generating incident script with 8-part format...")
 
         response = client.chat.completions.create(
-            model="gpt-4-turbo",
+            model="gpt-4o",
             messages=[
                 {
                     "role": "system",
@@ -581,7 +609,7 @@ async def generate_script_from_incident(
                 }
             ],
             temperature=0.7,
-            max_tokens=2000
+            max_tokens=5000
         )
 
         script = response.choices[0].message.content.strip()

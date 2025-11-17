@@ -94,6 +94,7 @@ class AdvancedVideoConfigModel(BaseModel):
     tone: Optional[str] = Field(None, alias="tone")
     enableSubtitles: bool = Field(False, alias="enableSubtitles")
     subtitleLanguage: Optional[str] = Field(None, alias="subtitleLanguage")
+    videoQuality: str = Field("medium", alias="videoQuality")
     width: int = Field(1280, alias="width")
     height: int = Field(720, alias="height")
     aspectRatio: str = Field("16:9", alias="aspectRatio")
@@ -1229,12 +1230,20 @@ async def generate_video(
     except Exception as question_error:
         print(f"[MarcelGPT] Training question generation failed: {question_error}")
 
-    # Build input_config with dimensions
+    # Build input_config with dimensions and settings
     input_config = {}
     if payload.get("width"):
         input_config["width"] = payload["width"]
     if payload.get("height"):
         input_config["height"] = payload["height"]
+    if payload.get("videoQuality"):
+        input_config["videoQuality"] = payload["videoQuality"]
+    if payload.get("language"):
+        input_config["language"] = payload["language"]
+    if payload.get("enableSubtitles") is not None:
+        input_config["enableSubtitles"] = payload["enableSubtitles"]
+    if payload.get("subtitleLanguage"):
+        input_config["subtitleLanguage"] = payload["subtitleLanguage"]
 
     job_data = {
         "tenant_id": tenant_id,
@@ -1256,12 +1265,20 @@ async def generate_video(
         full_callback_url = f"{callback_url}?job_id={job['id']}"
 
         # Call HeyGen API based on engine
-        # Prepare HeyGen kwargs with dimensions (always 1280x720 for landscape videos)
+        # Prepare HeyGen kwargs with dimensions and quality settings
         heygen_kwargs = {}
         if payload.get("width"):
             heygen_kwargs["width"] = payload["width"]
         if payload.get("height"):
             heygen_kwargs["height"] = payload["height"]
+        if payload.get("videoQuality"):
+            heygen_kwargs["quality"] = payload["videoQuality"]
+        if payload.get("language"):
+            heygen_kwargs["language"] = payload["language"]
+        if payload.get("enableSubtitles"):
+            heygen_kwargs["enable_subtitles"] = payload["enableSubtitles"]
+        if payload.get("subtitleLanguage"):
+            heygen_kwargs["subtitle_language"] = payload["subtitleLanguage"]
 
         if engine == "v2":
             # V2 API: For group avatars with avatar_id (dimensions: 1280x720)
