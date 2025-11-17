@@ -18,6 +18,11 @@ from app.services.photo_avatar_service import PhotoAvatarService
 from app.services.script_generation_service import generate_questions_from_script
 from app.config import settings
 
+try:
+    from openai import AsyncOpenAI
+except ImportError:
+    AsyncOpenAI = None
+
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
@@ -2181,6 +2186,41 @@ async def translate_video(
         print(f"[MarcelGPT] Error fetching original job: {e}")
         raise HTTPException(500, "Failed to fetch original video job")
 
+    # Get the original script
+    original_script = original_job.get("input_text", "")
+    if not original_script:
+        raise HTTPException(400, "Original job has no script to translate")
+
+    # Translate the script using OpenAI
+    try:
+        if not AsyncOpenAI:
+            raise HTTPException(500, "OpenAI client not available. Please install openai package.")
+
+        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+
+        translate_prompt = f"""Translate the following training script to {language_name}.
+Keep the structure, tone, and safety focus intact. Maintain any specific technical terms and company-specific language where appropriate.
+
+ORIGINAL SCRIPT:
+{original_script}
+
+TRANSLATED SCRIPT ({language_name}):"""
+
+        response = await client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": "You are a professional translator specializing in safety training materials. Translate accurately while maintaining the educational tone and safety context."},
+                {"role": "user", "content": translate_prompt}
+            ],
+            temperature=0.7,
+            max_tokens=5000
+        )
+
+        translated_script = response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"[MarcelGPT] Error translating script: {e}")
+        raise HTTPException(500, f"Failed to translate script: {str(e)}")
+
     # Create new translated job with language prefix in title
     original_title = original_job.get("title", f"Video #{job_id}")
 
@@ -2190,21 +2230,23 @@ async def translate_video(
     else:
         translated_title = original_title
 
+    # Get original config and update with target language
+    original_config = original_job.get("input_config") or {}
+
     new_job_data = {
         "tenant_id": tenant_id,
         "user_id": user.get("id"),
         "title": translated_title,
         "engine": original_job.get("engine", "v2"),
-        "status": "completed",
-        "input_text": original_job.get("input_text", ""),
+        "status": "pending",  # Will be processed by video generation queue
+        "input_text": translated_script,
         "input_config": {
-            **(original_job.get("input_config") or {}),
+            **original_config,
             "target_language": target_language,
             "translated_from_job_id": job_id,
-            "language_label": language_label
-        },
-        "duration": original_job.get("duration"),
-        "artifacts": original_job.get("artifacts", [])  # Copy artifacts from original
+            "language_label": language_label,
+            "language": target_language  # Force target language for HeyGen
+        }
     }
 
     try:
@@ -2219,7 +2261,7 @@ async def translate_video(
             "language": target_language,
             "language_name": language_name,
             "original_job_id": job_id,
-            "message": f"Video translated to {language_name}"
+            "message": f"Translation started. Video will be generated in {language_name}."
         }
     except Exception as e:
         print(f"[MarcelGPT] Error creating translated job: {e}")
