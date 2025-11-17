@@ -336,26 +336,60 @@ class VideoCompositionService:
 
         return None
 
-    async def _run_ffmpeg(self, cmd: List[str]) -> str:
-        """Run FFmpeg command"""
-        logger.info(f"[FFmpeg] {' '.join(cmd)}")
-        return await self._run_command(cmd)
+    async def _run_ffmpeg(self, cmd: List[str], timeout: float = 600.0) -> str:
+        """
+        Run FFmpeg command with timeout
 
-    async def _run_command(self, cmd: List[str]) -> str:
-        """Run system command asynchronously"""
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
+        Args:
+            cmd: Command and arguments
+            timeout: Max seconds to wait (default: 600 seconds / 10 minutes)
+        """
+        logger.info(f"[FFmpeg] {' '.join(cmd)} (timeout: {timeout}s)")
+        return await self._run_command(cmd, timeout=timeout)
 
-        stdout, stderr = await process.communicate()
+    async def _run_command(self, cmd: List[str], timeout: float = 600.0) -> str:
+        """
+        Run system command asynchronously with timeout
 
-        if process.returncode != 0:
-            error = stderr.decode() if stderr else "Unknown error"
-            raise Exception(f"Command failed: {error}")
+        Args:
+            cmd: Command and arguments
+            timeout: Max seconds to wait before killing process
+        """
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
 
-        return stdout.decode() if stdout else ""
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(),
+                    timeout=timeout
+                )
+            except asyncio.TimeoutError:
+                # Kill the process if it times out
+                logger.error(f"[FFmpeg] Process timed out after {timeout}s, terminating")
+                process.kill()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    # Force kill if graceful kill doesn't work
+                    logger.error("[FFmpeg] Process kill timed out, force killing")
+                    process.kill()
+                raise Exception(f"FFmpeg process timed out after {timeout} seconds")
+
+            if process.returncode != 0:
+                error = stderr.decode() if stderr else "Unknown error"
+                raise Exception(f"FFmpeg failed: {error}")
+
+            return stdout.decode() if stdout else ""
+
+        except asyncio.TimeoutError:
+            raise Exception(f"FFmpeg operation timed out after {timeout} seconds")
+        except Exception as e:
+            logger.error(f"[FFmpeg] Error: {str(e)}")
+            raise
 
 
 # Singleton instance

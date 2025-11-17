@@ -2273,16 +2273,110 @@ TRANSLATED SCRIPT ({language_name}):"""
         # Insert the new translated job
         translated_job_res = supabase.table("video_jobs").insert(new_job_data).execute()
         translated_job = ensure_response(translated_job_res)[0]
+        translated_job_id = translated_job["id"]
 
-        return {
-            "success": True,
-            "job_id": translated_job["id"],
-            "title": translated_job["title"],
-            "language": target_language,
-            "language_name": language_name,
-            "original_job_id": job_id,
-            "message": f"Translation started. Video will be generated in {language_name}."
-        }
+        # Now automatically trigger video generation for the translated job
+        # Get HeyGen service for video generation
+        heygen = get_heygen_service(tenant_id)
+        if not heygen:
+            raise HTTPException(400, "HeyGen API key not configured for this tenant")
+
+        # Get original job details to use for video generation
+        engine = original_job.get("engine", "v2")
+        avatar_id = original_job.get("avatar_id") or original_job.get("image_key")
+        voice_id = original_job.get("voice_id")
+
+        if not avatar_id or not voice_id:
+            # If original job doesn't have avatar/voice, just return job creation response
+            # User will need to manually generate from the UI
+            return {
+                "success": True,
+                "job_id": translated_job_id,
+                "title": translated_job["title"],
+                "language": target_language,
+                "language_name": language_name,
+                "original_job_id": job_id,
+                "message": f"Translation created. Please select avatar and voice to generate."
+            }
+
+        # Build callback URL
+        from app.config import settings
+        callback_url = f"{settings.API_URL}/marcel-gpt/webhook"
+        full_callback_url = f"{callback_url}?job_id={translated_job_id}"
+
+        # Prepare HeyGen parameters
+        heygen_kwargs = {}
+        if original_config.get("width"):
+            heygen_kwargs["width"] = original_config["width"]
+        if original_config.get("height"):
+            heygen_kwargs["height"] = original_config["height"]
+        if original_config.get("videoQuality"):
+            heygen_kwargs["quality"] = original_config["videoQuality"]
+        # Force target language
+        heygen_kwargs["language"] = target_language
+
+        # Call HeyGen API to generate translated video
+        try:
+            if engine == "v2":
+                heygen_response = await heygen.create_video_v2(
+                    input_text=translated_script,
+                    avatar_id=avatar_id,
+                    voice_id=voice_id,
+                    callback_url=full_callback_url,
+                    title=translated_title,
+                    **heygen_kwargs
+                )
+            elif engine == "av4":
+                if original_config.get("image_key"):
+                    heygen_kwargs["image_key"] = original_config["image_key"]
+                heygen_response = await heygen.create_video_av4(
+                    input_text=translated_script,
+                    avatar_id=avatar_id,
+                    voice_id=voice_id,
+                    callback_url=full_callback_url,
+                    video_title=translated_title,
+                    **heygen_kwargs
+                )
+            else:
+                raise Exception(f"Unsupported engine: {engine}")
+
+            # Extract video_id from response
+            video_id = heygen_response.get("data", {}).get("video_id")
+            if not video_id:
+                raise Exception("HeyGen API did not return video_id")
+
+            # Update translated job with HeyGen video ID
+            supabase.table("video_jobs").update({
+                "heygen_job_id": video_id,
+                "status": "queued",
+                "queued_at": datetime.now().isoformat(),
+                "callback_url": full_callback_url
+            }).eq("id", translated_job_id).execute()
+
+            return {
+                "success": True,
+                "job_id": translated_job_id,
+                "heygen_job_id": video_id,
+                "title": translated_job["title"],
+                "language": target_language,
+                "language_name": language_name,
+                "original_job_id": job_id,
+                "status": "queued",
+                "message": f"Translation started and video generation queued in {language_name}."
+            }
+
+        except Exception as generation_error:
+            print(f"[MarcelGPT] Error generating translated video: {generation_error}")
+            # Update job as failed
+            supabase.table("video_jobs").update({
+                "status": "failed",
+                "error_message": f"Video generation failed: {str(generation_error)}",
+                "failed_at": datetime.now().isoformat()
+            }).eq("id", translated_job_id).execute()
+            raise HTTPException(500, f"Failed to generate translated video: {str(generation_error)}")
+
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"[MarcelGPT] Error creating translated job: {e}")
         raise HTTPException(500, "Failed to create translated video job")
@@ -2296,6 +2390,9 @@ async def compose_video(
 ):
     """
     Compose a video with scene clips and background music
+
+    NOTE: This endpoint queues composition asynchronously and returns immediately.
+    The composition happens in the background. Check /videos/{job_id} for status.
 
     Request body:
     {
@@ -2313,7 +2410,7 @@ async def compose_video(
         "fade_out": 1.0
     }
 
-    Returns: Composition job details
+    Returns: Composition job details (queued for async processing)
     """
     require_permission(user, "modules.access_marcel_gpt")
 
@@ -2378,82 +2475,96 @@ async def compose_video(
         print(f"[MarcelGPT] Error creating composition job: {e}")
         raise HTTPException(500, "Failed to create composition job")
 
-    # Queue composition task asynchronously
-    try:
-        # Update composition status to processing
-        supabase.table("video_compositions").update({"composition_status": "compositing", "started_at": "now()"}).eq("id", composition["id"]).execute()
+    # Queue composition as background task (returns immediately)
+    # This prevents the endpoint from blocking while FFmpeg runs
+    import asyncio
 
-        # Download base video to temp location
-        import tempfile as tmp
-
-        with tmp.NamedTemporaryFile(suffix=".mp4", delete=False) as temp_base:
-            base_video_path = temp_base.name
-            async with httpx.AsyncClient() as client:
-                async with client.stream("GET", base_video_url) as response:
-                    async for chunk in response.aiter_bytes(chunk_size=8192):
-                        temp_base.write(chunk)
-
-        # Run composition
-        composition_service = get_composition_service()
-        result = await composition_service.compose_video(
-            base_video_url=base_video_url,
-            base_video_path=base_video_path,
-            scene_clips=[clip.dict() for clip in (payload.scene_clips or [])],
-            background_music_path=payload.background_music_path,
-        )
-
-        # Cleanup temp base video
+    async def _run_composition_async():
+        """Background task to run composition without blocking the endpoint"""
         try:
-            os.remove(base_video_path)
-        except:
-            pass
-
-        if not result.get("success"):
-            error_msg = result.get("error", "Unknown composition error")
+            # Update composition status to processing
             supabase.table("video_compositions").update({
-                "composition_status": "failed",
-                "composition_error": error_msg
+                "composition_status": "compositing",
+                "started_at": datetime.now().isoformat()
             }).eq("id", composition["id"]).execute()
 
-            raise HTTPException(500, f"Composition failed: {error_msg}")
+            # Download base video to temp location with timeout
+            import tempfile as tmp
+            base_video_path = None
 
-        # Upload composed video to storage
-        output_path = result.get("output_path")
-        if not output_path or not os.path.exists(output_path):
-            raise HTTPException(500, "Composition output not found")
+            try:
+                with tmp.NamedTemporaryFile(suffix=".mp4", delete=False) as temp_base:
+                    base_video_path = temp_base.name
+                    # Download with 5-minute timeout for large files
+                    async with httpx.AsyncClient(timeout=300.0) as client:
+                        async with client.stream("GET", base_video_url) as response:
+                            if response.status_code != 200:
+                                raise Exception(f"Failed to download video: HTTP {response.status_code}")
+                            async for chunk in response.aiter_bytes(chunk_size=8192):
+                                temp_base.write(chunk)
+            except asyncio.TimeoutError:
+                raise Exception("Base video download timed out (5 minutes)")
+            except Exception as download_error:
+                raise Exception(f"Failed to download base video: {str(download_error)}")
 
-        # For now, store the local path - in production, upload to S3/Spaces
-        final_url = f"file://{output_path}"
-        final_size = os.path.getsize(output_path)
+            if not base_video_path or not os.path.exists(base_video_path):
+                raise Exception("Failed to save base video to temp file")
 
-        # Update composition job with results
-        supabase.table("video_compositions").update({
-            "composition_status": "completed",
-            "final_video_url": final_url,
-            "total_duration": result.get("duration"),
-            "completed_at": "now()"
-        }).eq("id", composition["id"]).execute()
+            try:
+                # Run composition (this is CPU-intensive, will block briefly)
+                composition_service = get_composition_service()
+                result = await composition_service.compose_video(
+                    base_video_url=base_video_url,
+                    base_video_path=base_video_path,
+                    scene_clips=[clip.dict() for clip in (payload.scene_clips or [])],
+                    background_music_path=payload.background_music_path,
+                )
 
-        return {
-            "success": True,
-            "composition_id": composition["id"],
-            "job_id": job_id,
-            "status": "completed",
-            "duration": result.get("duration"),
-            "size": result.get("size"),
-            "output_path": output_path,
-            "message": "Video composition completed successfully"
-        }
+                if not result.get("success"):
+                    error_msg = result.get("error", "Unknown composition error")
+                    supabase.table("video_compositions").update({
+                        "composition_status": "failed",
+                        "composition_error": error_msg
+                    }).eq("id", composition["id"]).execute()
+                    return
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"[MarcelGPT] Composition error: {e}")
-        try:
-            supabase.table("video_compositions").update({
-                "composition_status": "failed",
-                "composition_error": str(e)
-            }).eq("id", composition["id"]).execute()
-        except:
-            pass
-        raise HTTPException(500, f"Composition error: {str(e)}")
+                # Update composition job with results
+                output_path = result.get("output_path")
+                supabase.table("video_compositions").update({
+                    "composition_status": "completed",
+                    "final_video_url": f"file://{output_path}",
+                    "total_duration": result.get("duration"),
+                    "completed_at": datetime.now().isoformat()
+                }).eq("id", composition["id"]).execute()
+
+                print(f"[MarcelGPT] Composition completed for job {job_id}")
+
+            finally:
+                # Always cleanup temp base video
+                if base_video_path:
+                    try:
+                        os.remove(base_video_path)
+                    except Exception as cleanup_error:
+                        print(f"[MarcelGPT] Warning: Failed to cleanup temp file {base_video_path}: {cleanup_error}")
+
+        except Exception as e:
+            print(f"[MarcelGPT] Background composition error: {str(e)}")
+            try:
+                supabase.table("video_compositions").update({
+                    "composition_status": "failed",
+                    "composition_error": str(e)
+                }).eq("id", composition["id"]).execute()
+            except Exception as db_error:
+                print(f"[MarcelGPT] Failed to update composition error status: {db_error}")
+
+    # Fire and forget - queue the background task without waiting
+    asyncio.create_task(_run_composition_async())
+
+    # Return immediately with pending status
+    return {
+        "success": True,
+        "composition_id": composition["id"],
+        "job_id": job_id,
+        "status": "queued",
+        "message": "Composition queued for processing. Check job status for updates."
+    }
