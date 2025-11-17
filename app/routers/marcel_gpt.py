@@ -2073,3 +2073,100 @@ async def generate_script_from_incident(
         raise HTTPException(500, result.get("error", "Failed to generate script"))
 
     return result
+
+
+@router.post("/videos/{job_id}/translate")
+async def translate_video(
+    job_id: str,
+    payload: dict = Body(...),
+    user=Depends(get_current_user),
+):
+    """
+    Create a translated version of an existing video job
+
+    Request body:
+    {
+        "target_language": "tr"  # Language code (en, tr, es, fr, de, zh, ja, pt)
+    }
+
+    Returns: New translated video job details
+    """
+    require_permission(user, "modules.access_marcel_gpt")
+
+    tenant_id = user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(400, "User not assigned to a tenant")
+
+    target_language = payload.get("target_language", "en")
+
+    # Map language codes to language names
+    language_map = {
+        "en": "English",
+        "tr": "Turkish",
+        "es": "Spanish",
+        "fr": "French",
+        "de": "German",
+        "zh": "Chinese",
+        "ja": "Japanese",
+        "pt": "Portuguese"
+    }
+
+    language_name = language_map.get(target_language, target_language.upper())
+    language_label = f"[{target_language.upper()}]"
+
+    # Fetch the original job
+    try:
+        original_job_res = supabase.table("video_jobs").select("*").eq("id", job_id).eq("tenant_id", tenant_id).execute()
+        original_jobs = ensure_response(original_job_res)
+
+        if not original_jobs:
+            raise HTTPException(404, f"Video job {job_id} not found")
+
+        original_job = original_jobs[0]
+    except Exception as e:
+        print(f"[MarcelGPT] Error fetching original job: {e}")
+        raise HTTPException(500, "Failed to fetch original video job")
+
+    # Create new translated job with language prefix in title
+    original_title = original_job.get("title", f"Video #{job_id}")
+
+    # Add language prefix if not already present
+    if not original_title.startswith("["):
+        translated_title = f"{language_label} {original_title}"
+    else:
+        translated_title = original_title
+
+    new_job_data = {
+        "tenant_id": tenant_id,
+        "user_id": user.get("id"),
+        "title": translated_title,
+        "engine": original_job.get("engine", "v2"),
+        "status": "completed",
+        "input_text": original_job.get("input_text", ""),
+        "input_config": {
+            **(original_job.get("input_config") or {}),
+            "target_language": target_language,
+            "translated_from_job_id": job_id,
+            "language_label": language_label
+        },
+        "duration": original_job.get("duration"),
+        "artifacts": original_job.get("artifacts", [])  # Copy artifacts from original
+    }
+
+    try:
+        # Insert the new translated job
+        translated_job_res = supabase.table("video_jobs").insert(new_job_data).execute()
+        translated_job = ensure_response(translated_job_res)[0]
+
+        return {
+            "success": True,
+            "job_id": translated_job["id"],
+            "title": translated_job["title"],
+            "language": target_language,
+            "language_name": language_name,
+            "original_job_id": job_id,
+            "message": f"Video translated to {language_name}"
+        }
+    except Exception as e:
+        print(f"[MarcelGPT] Error creating translated job: {e}")
+        raise HTTPException(500, "Failed to create translated video job")
