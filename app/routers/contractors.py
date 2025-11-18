@@ -284,7 +284,30 @@ async def list_contractors(
     if status:
         query = query.eq("status", status)
     res = query.execute()
-    return ensure_response(res)
+    data = ensure_response(res) or []
+    if not isinstance(data, list):
+        data = [data]
+
+    tenant_name = None
+    try:
+        tenant_res = (
+            supabase.table("tenants")
+            .select("name")
+            .eq("id", tenant_id)
+            .limit(1)
+            .single()
+            .execute()
+        )
+        tenant_row = tenant_res.data or {}
+        tenant_name = tenant_row.get("name")
+    except Exception:
+        tenant_name = None
+
+    if tenant_name:
+        for contractor in data:
+            contractor["tenant_name"] = tenant_name
+
+    return data
 
 
 @router.post("/")
