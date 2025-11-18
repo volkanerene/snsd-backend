@@ -247,7 +247,9 @@ async def upload_submission_file(
             'application/msword',
             'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
             'image/jpeg',
-            'image/png'
+            'image/png',
+            'image/heif',
+            'image/heic'
         }
         if file.content_type and file.content_type not in allowed_types:
             raise HTTPException(400, f"File type not allowed: {file.content_type}")
@@ -326,6 +328,82 @@ async def upload_submission_file(
         raise
     except Exception as e:
         raise HTTPException(500, f"Failed to upload file: {str(e)}")
+
+
+@router.delete("/submissions/{submission_id}/upload")
+async def delete_submission_file(
+    submission_id: str,
+    docId: str = Query(...),
+    user=Depends(get_current_user),
+    tenant_id: str = Depends(require_tenant),
+):
+    """
+    Delete a document file from FRM32 submission.
+
+    Removes the file from Supabase Storage and updates the submission's attachments array.
+    """
+    print(f"[FRM32 Delete] Starting file deletion - submission_id: {submission_id}, docId: {docId}")
+    try:
+        # Verify submission exists and belongs to tenant
+        submission_res = (
+            supabase.table("frm32_submissions")
+            .select("id, attachments")
+            .eq("id", submission_id)
+            .eq("tenant_id", tenant_id)
+            .limit(1)
+            .execute()
+        )
+        submission = ensure_response(submission_res)
+        if not submission:
+            raise HTTPException(404, "Submission not found")
+
+        submission_data = submission if isinstance(submission, dict) else submission[0]
+        attachments = submission_data.get("attachments", []) or []
+
+        # Find attachment to delete
+        attachment_to_delete = None
+        for att in attachments:
+            if att.get("docId") == docId:
+                attachment_to_delete = att
+                break
+
+        if not attachment_to_delete:
+            raise HTTPException(404, f"Attachment with docId '{docId}' not found")
+
+        # Delete file from Supabase Storage
+        storage_path = attachment_to_delete.get("storage_path")
+        if storage_path:
+            try:
+                supabase.storage.from_("frm32-documents").remove([storage_path])
+                print(f"[FRM32 Delete] File deleted from storage: {storage_path}")
+            except Exception as e:
+                print(f"[FRM32 Delete] Warning: Failed to delete from storage: {str(e)}")
+                # Continue even if storage deletion fails
+
+        # Remove attachment from submission's attachments array
+        attachments = [a for a in attachments if a.get("docId") != docId]
+
+        # Update submission with new attachments
+        update_res = (
+            supabase.table("frm32_submissions")
+            .update({"attachments": attachments})
+            .eq("id", submission_id)
+            .eq("tenant_id", tenant_id)
+            .execute()
+        )
+        ensure_response(update_res)
+
+        print(f"[FRM32 Delete] File deletion successful - submission_id: {submission_id}, docId: {docId}")
+        return {
+            "success": True,
+            "docId": docId,
+            "message": "File deleted successfully"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Failed to delete file: {str(e)}")
 
 
 @router.post("/submissions/{submission_id}/submit")

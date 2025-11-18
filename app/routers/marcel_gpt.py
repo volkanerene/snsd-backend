@@ -4,8 +4,9 @@ MarcelGPT - HeyGen Video Generation API Routes
 import asyncio
 import logging
 import os
+import re
 from datetime import datetime, timedelta, timezone
-from typing import Any, Awaitable, Dict, List, Optional, TypeVar
+from typing import Any, Awaitable, Dict, List, Optional, TypeVar, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, UploadFile, File
 from httpx import HTTPStatusError
@@ -20,6 +21,10 @@ from app.services.heygen_service import get_heygen_service, get_fallback_heygen_
 from app.services.photo_avatar_service import PhotoAvatarService
 from app.services.script_generation_service import generate_questions_from_script
 from app.services.video_composition_service import get_composition_service
+from app.services.category_classifier import (
+    classify_script_categories,
+    VIDEO_CATEGORY_GROUPS,
+)
 from app.config import settings
 
 try:
@@ -27,11 +32,196 @@ try:
 except ImportError:
     AsyncOpenAI = None
 
+try:
+    from langdetect import detect, DetectorFactory, LangDetectException
+    DetectorFactory.seed = 0
+except ImportError:
+    detect = None
+    LangDetectException = None
+
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 VIDEO_SYNC_INTERVAL = timedelta(minutes=5)
 _LAST_HEYGEN_SYNC: Dict[str, datetime] = {}
+
+LANGUAGE_LABELS = {
+    "en": "English",
+    "af": "Afrikaans",
+    "ar": "Arabic",
+    "hy": "Armenian",
+    "az": "Azerbaijani",
+    "be": "Belarusian",
+    "bg": "Bulgarian",
+    "ca": "Catalan",
+    "cs": "Czech",
+    "cy": "Welsh",
+    "da": "Danish",
+    "de": "German",
+    "el": "Greek",
+    "eo": "Esperanto",
+    "es": "Spanish",
+    "et": "Estonian",
+    "fa": "Persian",
+    "fi": "Finnish",
+    "fr": "French",
+    "ga": "Irish",
+    "gd": "Scottish Gaelic",
+    "gl": "Galician",
+    "gu": "Gujarati",
+    "he": "Hebrew",
+    "hi": "Hindi",
+    "hr": "Croatian",
+    "hu": "Hungarian",
+    "id": "Indonesian",
+    "is": "Icelandic",
+    "it": "Italian",
+    "ja": "Japanese",
+    "jv": "Javanese",
+    "ko": "Korean",
+    "lt": "Lithuanian",
+    "lv": "Latvian",
+    "mk": "Macedonian",
+    "mr": "Marathi",
+    "ms": "Malay",
+    "my": "Burmese",
+    "nb": "Norwegian",
+    "nl": "Dutch",
+    "pa": "Punjabi",
+    "pl": "Polish",
+    "pt": "Portuguese",
+    "ro": "Romanian",
+    "ru": "Russian",
+    "sk": "Slovak",
+    "sl": "Slovenian",
+    "sq": "Albanian",
+    "sv": "Swedish",
+    "sw": "Swahili",
+    "ta": "Tamil",
+    "te": "Telugu",
+    "th": "Thai",
+    "tl": "Tagalog",
+    "tr": "Turkish",
+    "uk": "Ukrainian",
+    "ur": "Urdu",
+    "vi": "Vietnamese",
+    "zh": "Chinese (Simplified)",
+    "zh-tw": "Chinese (Traditional)",
+    "zh-TW": "Chinese (Traditional)",
+    "yue": "Cantonese"
+}
+
+def _normalize_language_code(code: str) -> str:
+    if not code:
+        return "unknown"
+    return code.lower()
+
+
+def _language_name(code: str) -> str:
+    if not code or code == "unknown":
+        return "Unknown"
+    return LANGUAGE_LABELS.get(code, code.upper())
+
+
+def _normalize_category_key(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    normalized = value.strip().lower()
+    normalized = normalized.replace(" ", "_").replace("-", "_")
+    normalized = normalized.replace("/", "_")
+    normalized = normalized.replace("&", "and")
+    normalized = re.sub(r"[^a-z_]", "", normalized)
+    if normalized in VIDEO_CATEGORY_GROUPS:
+        return normalized
+    return None
+
+
+def _sanitize_training_questions(questions: List[Any]) -> List[Dict[str, Any]]:
+    """Validate and normalize quiz questions before storing."""
+    sanitized: List[Dict[str, Any]] = []
+
+    for idx, question in enumerate(questions or []):
+        if hasattr(question, "model_dump"):
+            question_data = question.model_dump()
+        elif isinstance(question, dict):
+            question_data = question
+        else:
+            question_data = {}
+
+        question_text = (question_data.get("question") or "").strip()
+        if not question_text:
+            raise HTTPException(400, f"Question {idx + 1} is missing text")
+
+        question_type = question_data.get("type")
+        if question_type == "multiple_choice":
+            options = [
+                option.strip()
+                for option in (question_data.get("options") or [])
+                if isinstance(option, str) and option.strip()
+            ]
+            if len(options) < 2:
+                raise HTTPException(
+                    400,
+                    f"Question {idx + 1} requires at least two answer options"
+                )
+            correct_index = question_data.get("correct_answer") or 0
+            if correct_index >= len(options) or correct_index < 0:
+                correct_index = 0
+
+            sanitized.append(
+                {
+                    "type": "multiple_choice",
+                    "question": question_text,
+                    "options": options,
+                    "correct_answer": correct_index
+                }
+            )
+        else:
+            sanitized.append(
+                {
+                    "type": "text",
+                    "question": question_text,
+                    "expected_answer": (question_data.get("expected_answer") or "").strip()
+                    or None
+                }
+            )
+
+    return sanitized
+
+
+async def _ensure_job_categories(jobs: List[Dict[str, Any]]):
+    if not jobs:
+        return
+
+    missing = [
+        job for job in jobs
+        if not job.get("main_category") and (job.get("input_text") or "").strip()
+    ]
+    if not missing:
+        return
+
+    # Avoid classifying too many scripts per request to limit token usage
+    for job in missing[:3]:
+        try:
+            classification = await classify_script_categories(
+                job.get("input_text", ""),
+                use_openai=False
+            )
+            if not classification:
+                continue
+            supabase.table("video_jobs") \
+                .update({
+                    "main_category": classification["main_category"],
+                    "category_tags": classification["tags"],
+                    "category_metadata": classification
+                }) \
+                .eq("id", job["id"]) \
+                .execute()
+            job["main_category"] = classification["main_category"]
+            job["category_tags"] = classification["tags"]
+            job["category_metadata"] = classification
+        except Exception as exc:
+            logger.warning(f"[MarcelGPT] Failed to backfill category for job {job.get('id')}: {exc}")
 
 # Request timeout constants (in seconds)
 REQUEST_TIMEOUT_AVATAR = 30  # Avatar listing should be fast
@@ -536,8 +726,14 @@ async def get_custom_group_avatars(
 
         fallback_used = False
 
+        async def _fetch_with_timeout(service) -> List[Dict[str, Any]]:
+            try:
+                return await asyncio.wait_for(service.list_avatars_in_group(group_id), timeout=20)
+            except asyncio.TimeoutError:
+                raise HTTPException(504, "Timed out fetching avatars from HeyGen (20s). Please retry.")
+
         try:
-            avatars = await heygen.list_avatars_in_group(group_id)
+            avatars = await _fetch_with_timeout(heygen)
         except HTTPStatusError as http_error:
             status = http_error.response.status_code if http_error.response else None
             print(f"[MarcelGPT] Primary HeyGen request failed for group {group_id} with status {status}", file=sys.stderr, flush=True)
@@ -546,7 +742,7 @@ async def get_custom_group_avatars(
                 if not fallback_service:
                     raise HTTPException(502, "HeyGen denied access to this avatar group and no fallback API key is configured")
                 print(f"[MarcelGPT] Retrying custom group {group_id} with fallback HeyGen API key", file=sys.stderr, flush=True)
-                avatars = await fallback_service.list_avatars_in_group(group_id)
+                avatars = await _fetch_with_timeout(fallback_service)
                 fallback_used = True
             else:
                 raise
@@ -737,6 +933,48 @@ class LookFavoriteRequest(BaseModel):
     avatar_id: Optional[str] = None
     image_key: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
+
+
+class DetectLanguageRequest(BaseModel):
+    text: str
+
+
+class TranslateScriptRequest(BaseModel):
+    text: str
+    target_language: str
+    source_language: Optional[str] = None
+
+
+class TrainingQuestionInput(BaseModel):
+    question: str = Field(..., min_length=1)
+    type: Literal["multiple_choice", "text"]
+    options: Optional[List[str]] = None
+    correct_answer: Optional[int] = Field(default=None, ge=0)
+    expected_answer: Optional[str] = None
+
+
+class UpdateTrainingQuestionsRequest(BaseModel):
+    questions: List[TrainingQuestionInput] = Field(default_factory=list)
+
+
+class VideoJobPayload(BaseModel):
+    title: Optional[str] = None
+    input_text: str
+    avatar_id: Optional[str] = None
+    voice_id: str
+    engine: Optional[str] = Field(default="v2", description="Video engine: v2 or av4")
+    preset_id: Optional[int] = None
+    image_key: Optional[str] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    videoQuality: Optional[str] = None
+    language: Optional[str] = None
+    enableSubtitles: Optional[bool] = None
+    subtitleLanguage: Optional[str] = None
+
+
+class BatchGenerateVideoRequest(BaseModel):
+    jobs: List[VideoJobPayload] = Field(..., min_items=1, max_items=3)
 
 
 @router.post("/photo-avatars/looks/generate")
@@ -1236,79 +1474,57 @@ async def delete_preset(
 # Video Generation Endpoints
 # =========================================================================
 
-@router.post("/generate")
-async def generate_video(
-    payload: dict = Body(...),
-    user=Depends(get_current_user),
-):
-    """
-    Generate video using HeyGen API
-
-    Request body:
-    {
-        "title": "Video title",
-        "input_text": "Text for avatar to speak",
-        "avatar_id": "avatar_id",
-        "voice_id": "voice_id",
-        "engine": "v2" | "av4" | "template",
-        "preset_id": 123,  # Optional
-        "config": {  # Optional advanced settings
-            "speed": 1.0,
-            "avatar_style": "normal",
-            "width": 1920,
-            "height": 1080,
-            "background": {...}
-        }
-    }
-    """
-    require_permission(user, "marcel_gpt.create_video")
-
+async def _create_video_generation_job(user: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
     tenant_id = user.get("tenant_id")
     user_id = user.get("id")
 
     if not tenant_id:
         raise HTTPException(400, "User not assigned to a tenant")
 
-    # Validate required fields
-    if not payload.get("input_text"):
+    script_text = (payload.get("input_text") or "").strip()
+    if not script_text:
         raise HTTPException(400, "input_text is required")
 
-    # Accept either avatar_id (standard avatars) or image_key (photo avatars)
-    avatar_id = payload.get("avatar_id") or payload.get("image_key")
-    if not avatar_id:
+    avatar_identifier = payload.get("avatar_id") or payload.get("image_key")
+    if not avatar_identifier:
         raise HTTPException(400, "avatar_id or image_key is required")
 
-    if not payload.get("voice_id"):
+    voice_id = payload.get("voice_id")
+    if not voice_id:
         raise HTTPException(400, "voice_id is required")
 
     engine = payload.get("engine", "v2")
     if engine not in ["v2", "av4", "template"]:
         raise HTTPException(400, "Invalid engine. Must be v2, av4, or template")
 
-    # Get HeyGen service
     heygen = get_heygen_service(tenant_id)
     if not heygen:
         raise HTTPException(400, "HeyGen API key not configured for this tenant")
 
-    # Build callback URL
-    from app.config import settings
     callback_url = f"{settings.API_URL}/marcel-gpt/webhook"
 
-    # Create job record first
     training_questions: List[Dict[str, Any]] = []
     try:
-        question_result = generate_questions_from_script(payload["input_text"])
+        question_result = generate_questions_from_script(script_text)
         if question_result.get("success"):
             training_questions = question_result.get("questions") or []
     except Exception as question_error:
-        print(f"[MarcelGPT] Training question generation failed: {question_error}")
+        logger.warning(f"[MarcelGPT] Training question generation failed: {question_error}")
 
-    # Build input_config with dimensions and settings
-    input_config = {}
-    if payload.get("width"):
-        input_config["width"] = payload["width"]
-    if payload.get("height"):
-        input_config["height"] = payload["height"]
+    input_config: Dict[str, Any] = {}
+    # Normalize video dimensions & subtitle defaults
+    default_width = payload.get("width") or 1920
+    default_height = payload.get("height") or 1080
+    payload["width"] = default_width
+    payload["height"] = default_height
+
+    if payload.get("enableSubtitles") is None:
+        payload["enableSubtitles"] = True
+    if not payload.get("subtitleLanguage") and payload.get("language"):
+        payload["subtitleLanguage"] = payload.get("language")
+
+    input_config["width"] = default_width
+    input_config["height"] = default_height
     if payload.get("videoQuality"):
         input_config["videoQuality"] = payload["videoQuality"]
     if payload.get("language"):
@@ -1318,6 +1534,18 @@ async def generate_video(
     if payload.get("subtitleLanguage"):
         input_config["subtitleLanguage"] = payload["subtitleLanguage"]
 
+    logger.info(
+        "[MarcelGPT][VideoGeneration] Requested config width=%s height=%s quality=%s enableSubtitles=%s subtitleLanguage=%s title=%s",
+        payload.get("width"),
+        payload.get("height"),
+        payload.get("videoQuality"),
+        payload.get("enableSubtitles"),
+        payload.get("subtitleLanguage"),
+        payload.get("title")
+    )
+
+    category_data = await classify_script_categories(script_text)
+
     job_data = {
         "tenant_id": tenant_id,
         "user_id": user_id,
@@ -1325,106 +1553,189 @@ async def generate_video(
         "title": payload.get("title"),
         "engine": engine,
         "status": "pending",
-        "input_text": payload["input_text"],
+        "input_text": script_text,
         "input_config": input_config,
-        "training_questions": training_questions
+        "training_questions": training_questions,
+        "main_category": category_data["main_category"] if category_data else None,
+        "category_tags": category_data["tags"] if category_data else None,
+        "category_metadata": category_data if category_data else None
     }
 
     job_res = supabase.table("video_jobs").insert(job_data).execute()
     job = ensure_response(job_res)[0]
 
-    try:
-        # Generate callback URL with job ID
-        full_callback_url = f"{callback_url}?job_id={job['id']}"
+    full_callback_url = f"{callback_url}?job_id={job['id']}"
 
-        # Call HeyGen API based on engine
-        # Prepare HeyGen kwargs with dimensions and quality settings
-        heygen_kwargs = {}
-        if payload.get("width"):
-            heygen_kwargs["width"] = payload["width"]
-        if payload.get("height"):
-            heygen_kwargs["height"] = payload["height"]
-        if payload.get("videoQuality"):
-            heygen_kwargs["quality"] = payload["videoQuality"]
-        if payload.get("language"):
-            heygen_kwargs["language"] = payload["language"]
-        if payload.get("enableSubtitles"):
-            heygen_kwargs["enable_subtitles"] = payload["enableSubtitles"]
-        if payload.get("subtitleLanguage"):
-            heygen_kwargs["subtitle_language"] = payload["subtitleLanguage"]
+    heygen_kwargs: Dict[str, Any] = {}
+    heygen_kwargs["width"] = payload["width"]
+    heygen_kwargs["height"] = payload["height"]
+    if payload.get("videoQuality"):
+        heygen_kwargs["quality"] = payload["videoQuality"]
+    if payload.get("language"):
+        heygen_kwargs["language"] = payload["language"]
+    heygen_kwargs["enable_subtitles"] = payload.get("enableSubtitles", True)
+    if payload.get("subtitleLanguage"):
+        heygen_kwargs["subtitle_language"] = payload["subtitleLanguage"]
+    elif payload.get("language"):
+        heygen_kwargs["subtitle_language"] = payload["language"]
 
-        if engine == "v2":
-            # V2 API: For group avatars with avatar_id (dimensions: 1280x720)
-            heygen_response = await with_timeout(
-                heygen.create_video_v2(
-                    input_text=payload["input_text"],
-                    avatar_id=avatar_id,
-                    voice_id=payload["voice_id"],
-                    callback_url=full_callback_url,
-                    title=payload.get("title"),
-                    **heygen_kwargs
-                ),
-                REQUEST_TIMEOUT_GENERATION,
-                "HeyGen V2 video generation"
-            )
-        elif engine == "av4":
-            # AV4 API: For saved looks with image_key (dimensions: 1280x720)
-            if payload.get("image_key"):
-                heygen_kwargs["image_key"] = payload["image_key"]
-            else:
-                raise HTTPException(400, "AV4 engine requires image_key for saved looks")
+    logger.info(
+        "[MarcelGPT][VideoGeneration] Job pending HeyGen kwargs width=%s height=%s quality=%s enable_subtitles=%s subtitle_language=%s engine=%s",
+        heygen_kwargs.get("width"),
+        heygen_kwargs.get("height"),
+        heygen_kwargs.get("quality"),
+        heygen_kwargs.get("enable_subtitles"),
+        heygen_kwargs.get("subtitle_language"),
+        engine
+    )
 
-            heygen_response = await with_timeout(
-                heygen.create_video_av4(
-                    input_text=payload["input_text"],
-                    avatar_id=avatar_id,
-                    voice_id=payload["voice_id"],
-                    callback_url=full_callback_url,
-                    video_title=payload.get("title") or payload.get("video_title"),
-                    **heygen_kwargs
-                ),
-                REQUEST_TIMEOUT_GENERATION,
-                "HeyGen AV4 video generation"
-            )
+    if engine == "v2":
+        heygen_response = await with_timeout(
+            heygen.create_video_v2(
+                input_text=script_text,
+                avatar_id=avatar_identifier,
+                voice_id=voice_id,
+                callback_url=full_callback_url,
+                title=payload.get("title"),
+                **heygen_kwargs
+            ),
+            REQUEST_TIMEOUT_GENERATION,
+            "HeyGen V2 video generation"
+        )
+    elif engine == "av4":
+        if payload.get("image_key"):
+            heygen_kwargs["image_key"] = payload["image_key"]
         else:
-            raise HTTPException(400, f"Unknown engine: {engine}")
+            raise HTTPException(400, "AV4 engine requires image_key for saved looks")
 
-        # Extract video_id from response
-        video_id = heygen_response.get("data", {}).get("video_id")
+        heygen_response = await with_timeout(
+            heygen.create_video_av4(
+                input_text=script_text,
+                avatar_id=avatar_identifier,
+                voice_id=voice_id,
+                callback_url=full_callback_url,
+                video_title=payload.get("title") or payload.get("video_title"),
+                **heygen_kwargs
+            ),
+            REQUEST_TIMEOUT_GENERATION,
+            "HeyGen AV4 video generation"
+        )
+    else:
+        raise HTTPException(400, f"Unknown engine: {engine}")
 
-        if not video_id:
-            raise HTTPException(500, "HeyGen API did not return video_id")
+    logger.info(
+        "[MarcelGPT][VideoGeneration] HeyGen response for job %s: raw_status=%s keys=%s",
+        job["id"],
+        heygen_response.get("status") or heygen_response.get("code"),
+        list(heygen_response.keys())
+    )
 
-        # Update job with HeyGen video ID
-        supabase.table("video_jobs") \
-            .update({
-                "heygen_job_id": video_id,
-                "status": "queued",
-                "queued_at": datetime.now().isoformat(),
-                "callback_url": full_callback_url
-            }) \
-            .eq("id", job["id"]) \
-            .execute()
+    video_id = heygen_response.get("data", {}).get("video_id")
+    if not video_id:
+        raise HTTPException(500, "HeyGen API did not return video_id")
 
+    supabase.table("video_jobs") \
+        .update({
+            "heygen_job_id": video_id,
+            "status": "queued",
+            "queued_at": datetime.now().isoformat(),
+            "callback_url": full_callback_url
+        }) \
+        .eq("id", job["id"]) \
+        .execute()
+
+    logger.info(f"[MarcelGPT] Queued video job #{job['id']} via HeyGen job {video_id}")
+
+    scene_clips = payload.get("scene_clips")
+    if isinstance(scene_clips, list) and scene_clips:
+        logger.info(
+            "[MarcelGPT] Scene clips detected for job %s, queuing composition with %s clips",
+            job["id"],
+            len(scene_clips)
+        )
+        asyncio.create_task(_trigger_composition_async(
+            job_id=job["id"],
+            tenant_id=tenant_id,
+            scene_clips=scene_clips,
+            background_music=payload.get("background_music"),
+            heygen_job_id=video_id
+        ))
         return {
             "job_id": job["id"],
             "heygen_job_id": video_id,
             "status": "queued",
-            "message": "Video generation started"
+            "composition_queued": True,
+            "scene_count": len(scene_clips),
+            "message": "Video generation started. Scene composition queued."
         }
 
-    except Exception as e:
-        # Update job as failed
-        supabase.table("video_jobs") \
-            .update({
-                "status": "failed",
-                "error_message": str(e),
-                "failed_at": datetime.now().isoformat()
-            }) \
-            .eq("id", job["id"]) \
-            .execute()
+    return {
+        "job_id": job["id"],
+        "heygen_job_id": video_id,
+        "status": "queued",
+        "message": f"Video generation queued (job #{job['id']})"
+    }
 
-        raise HTTPException(500, f"Video generation failed: {str(e)}")
+
+@router.post("/generate")
+async def generate_video(
+    payload: dict = Body(...),
+    user=Depends(get_current_user),
+):
+    """
+    Generate a single HeyGen video job
+    """
+    require_permission(user, "marcel_gpt.create_video")
+    return await _create_video_generation_job(user, payload)
+
+
+@router.post("/generate/batch")
+async def generate_videos_batch(
+    payload: BatchGenerateVideoRequest,
+    user=Depends(get_current_user),
+):
+    """
+    Generate up to 3 HeyGen jobs in one request (multi-language workflows)
+    """
+    require_permission(user, "marcel_gpt.create_video")
+
+    results: List[Dict[str, Any]] = []
+    for idx, job_payload in enumerate(payload.jobs):
+        try:
+            job_result = await _create_video_generation_job(
+                user,
+                job_payload.model_dump(exclude_none=True)
+            )
+            job_result["index"] = idx
+            results.append(job_result)
+        except HTTPException as exc:
+            logger.warning(f"[MarcelGPT] Batch job {idx} failed: {exc.detail}")
+            results.append({
+                "index": idx,
+                "status": "failed",
+                "error": exc.detail,
+                "error_code": exc.status_code,
+            })
+        except Exception as exc:
+            logger.error(f"[MarcelGPT] Batch job {idx} unexpected error: {exc}")
+            results.append({
+                "index": idx,
+                "status": "failed",
+                "error": str(exc),
+                "error_code": 500,
+            })
+
+    success_count = len([res for res in results if res.get("job_id")])
+    if success_count == len(payload.jobs):
+        status = "success"
+    elif success_count == 0:
+        status = "failed"
+    else:
+        status = "partial"
+
+    return {"status": status, "results": results}
+
+
 
 
 # =========================================================================
@@ -1602,6 +1913,46 @@ async def _populate_missing_artifacts(jobs: List[Dict[str, Any]], heygen_service
             traceback.print_exc()
 
 
+async def _detect_language_code(text: str) -> str:
+    text = (text or "").strip()
+    if not text:
+        return "unknown"
+
+    if detect:
+        try:
+            return _normalize_language_code(detect(text))
+        except LangDetectException:
+            return "unknown"
+        except Exception as exc:
+            logger.warning(f"[MarcelGPT] langdetect failed, falling back to OpenAI: {exc}")
+
+    if not AsyncOpenAI or not settings.OPENAI_API_KEY:
+        return "unknown"
+
+    prompt = (
+        "Identify the ISO 639-1 language code (two letters) for the following text. "
+        "If unsure, respond with 'unknown'. Return only the code.\n\n"
+        f"TEXT:\n{text[:1000]}"
+    )
+
+    try:
+        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        completion = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0,
+            max_tokens=10,
+            messages=[
+                {"role": "system", "content": "Respond only with an ISO 639-1 language code."},
+                {"role": "user", "content": prompt}
+            ]
+        )
+        raw = completion.choices[0].message.content.strip().split()[0]
+        return _normalize_language_code(raw)
+    except Exception as exc:
+        logger.error(f"[MarcelGPT] OpenAI-based language detection failed: {exc}")
+        return "unknown"
+
+
 # =========================================================================
 # Job Management Endpoints
 # =========================================================================
@@ -1612,6 +1963,8 @@ async def list_jobs(
     status: Optional[str] = Query(None, description="Filter by status"),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    main_category: Optional[str] = Query(None, description="Filter by main category (process_safety | personal_safety)"),
+    tags: Optional[List[str]] = Query(None, description="Filter by one or more category tag keys"),
 ):
     """List video generation jobs for current tenant with artifacts"""
     require_permission(user, "modules.access_marcel_gpt")
@@ -1630,6 +1983,16 @@ async def list_jobs(
 
     if status:
         query = query.eq("status", status)
+    normalized_category = _normalize_category_key(main_category)
+    if normalized_category:
+        query = query.eq("main_category", normalized_category)
+
+    if tags:
+        normalized_tags = [
+            _normalize_tag_key(tag) for tag in tags if _normalize_tag_key(tag)
+        ]
+        if normalized_tags:
+            query = query.contains("category_tags", normalized_tags)
 
     query = query.range(offset, offset + limit - 1) \
         .order("created_at", desc=True)
@@ -1642,11 +2005,57 @@ async def list_jobs(
         if "video_artifacts" in job:
             job["artifacts"] = job.pop("video_artifacts")
 
+    # Populate any missing category data for legacy records
+    await _ensure_job_categories(jobs)
+
     # Populate missing artifacts for completed jobs that don't have them yet
     if heygen:
         await _populate_missing_artifacts(jobs, heygen, tenant_id, user.get("id"))
 
     return {"jobs": jobs, "count": len(jobs) if jobs else 0}
+
+
+@router.patch("/jobs/{job_id}/training-questions")
+async def update_job_training_questions(
+    job_id: int,
+    payload: UpdateTrainingQuestionsRequest,
+    user=Depends(get_current_user)
+):
+    """Update quiz questions attached to a generated video job."""
+    require_permission(user, "modules.access_marcel_gpt")
+
+    tenant_id = user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(400, "User not assigned to a tenant")
+
+    job_res = (
+        supabase.table("video_jobs")
+        .select("id")
+        .eq("id", job_id)
+        .eq("tenant_id", tenant_id)
+        .limit(1)
+        .execute()
+    )
+    job_data = ensure_response(job_res)
+    if not job_data:
+        raise HTTPException(404, "Video job not found")
+
+    sanitized_questions = _sanitize_training_questions(payload.questions or [])
+
+    update_res = (
+        supabase.table("video_jobs")
+        .update(
+            {
+                "training_questions": sanitized_questions
+            }
+        )
+        .eq("id", job_id)
+        .eq("tenant_id", tenant_id)
+        .execute()
+    )
+    ensure_response(update_res)
+
+    return {"success": True, "training_questions": sanitized_questions}
 
 
 @router.get("/heygen/videos")
@@ -2120,6 +2529,94 @@ async def generate_script_from_documents(
         raise HTTPException(500, f"Error processing documents: {str(e)}")
 
 
+@router.post("/scripts/detect-language")
+async def detect_script_language(
+    payload: DetectLanguageRequest,
+    user=Depends(get_current_user),
+):
+    """Detect the primary language for a script"""
+    require_permission(user, "modules.access_marcel_gpt")
+
+    text = (payload.text or "").strip()
+    if not text:
+        raise HTTPException(400, "text is required")
+
+    detected_code = await _detect_language_code(text)
+
+    return {
+        "language": detected_code,
+        "language_name": _language_name(detected_code),
+    }
+
+
+@router.post("/scripts/translate")
+async def translate_script(
+    payload: TranslateScriptRequest,
+    user=Depends(get_current_user),
+):
+    """Translate a script to the requested language using OpenAI"""
+    require_permission(user, "modules.access_marcel_gpt")
+
+    if not AsyncOpenAI:
+        raise HTTPException(500, "OpenAI client is not configured on the server")
+
+    text = (payload.text or "").strip()
+    if not text:
+        raise HTTPException(400, "text is required")
+
+    target_language = _normalize_language_code(payload.target_language)
+    if not target_language or target_language == "unknown":
+        raise HTTPException(400, "target_language is required")
+
+    source_language = _normalize_language_code(payload.source_language or "")
+    if not source_language or source_language == "unknown":
+        source_language = await _detect_language_code(text)
+
+    client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+    system_prompt = (
+        "You translate corporate training content with high fidelity. "
+        "Preserve tone, technical accuracy, and structure. "
+        "Return only the translated script without additional commentary."
+    )
+    user_prompt = (
+        f"Translate the following narration into {_language_name(target_language)}.\n"
+        "Keep any bulleting or numbering intact.\n\n"
+        f"--- SCRIPT START ---\n{text}\n--- SCRIPT END ---"
+    )
+
+    try:
+        completion = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.2,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+    except Exception as exc:
+        logger.error(f"[MarcelGPT] Translation failed: {exc}")
+        raise HTTPException(500, "Failed to translate script")
+
+    translated_text = (
+        completion.choices[0].message.content.strip()
+        if completion.choices
+        and completion.choices[0].message
+        and completion.choices[0].message.content
+        else ""
+    )
+
+    if not translated_text:
+        raise HTTPException(500, "Translation returned an empty response")
+
+    return {
+        "text": translated_text,
+        "language": target_language,
+        "language_name": _language_name(target_language),
+        "source_language": source_language or "unknown",
+        "source_language_name": _language_name(source_language or "unknown"),
+    }
+
+
 @router.post("/scripts/from-incident")
 async def generate_script_from_incident(
     payload: GenerateIncidentScriptRequest,
@@ -2268,6 +2765,7 @@ async def translate_video(
         raise HTTPException(400, "Original job has no script to translate")
 
     # Translate the script using OpenAI
+    logger.info(f"[MarcelGPT] Starting translation: job_id={job_id}, target={language_name} ({target_language}), script_length={len(original_script)}")
     try:
         if not AsyncOpenAI:
             raise HTTPException(500, "OpenAI client not available. Please install openai package.")
@@ -2293,8 +2791,9 @@ TRANSLATED SCRIPT ({language_name}):"""
         )
 
         translated_script = response.choices[0].message.content.strip()
+        logger.info(f"[MarcelGPT] Script translated successfully: length={len(translated_script)} chars")
     except Exception as e:
-        print(f"[MarcelGPT] Error translating script: {e}")
+        logger.error(f"[MarcelGPT] Translation failed: {str(e)}")
         raise HTTPException(500, f"Failed to translate script: {str(e)}")
 
     # Create new translated job with language prefix in title
@@ -2309,6 +2808,8 @@ TRANSLATED SCRIPT ({language_name}):"""
     # Get original config and update with target language
     original_config = original_job.get("input_config") or {}
 
+    category_data = await classify_script_categories(translated_script)
+
     new_job_data = {
         "tenant_id": tenant_id,
         "user_id": user.get("id"),
@@ -2322,7 +2823,10 @@ TRANSLATED SCRIPT ({language_name}):"""
             "translated_from_job_id": job_id,
             "language_label": language_label,
             "language": target_language  # Force target language for HeyGen
-        }
+        },
+        "main_category": category_data["main_category"] if category_data else original_job.get("main_category"),
+        "category_tags": category_data["tags"] if category_data else original_job.get("category_tags"),
+        "category_metadata": category_data or original_job.get("category_metadata")
     }
 
     try:
@@ -2403,6 +2907,7 @@ TRANSLATED SCRIPT ({language_name}):"""
         heygen_kwargs["subtitle_language"] = target_language
 
         # Call HeyGen API to generate translated video
+        logger.info(f"[MarcelGPT] Calling HeyGen API for translation: engine={engine}, voice_id={voice_id}, language={target_language}, subtitles=enabled")
         try:
             if engine == "v2":
                 heygen_response = await with_timeout(
@@ -2440,6 +2945,8 @@ TRANSLATED SCRIPT ({language_name}):"""
             if not video_id:
                 raise Exception("HeyGen API did not return video_id")
 
+            logger.info(f"[MarcelGPT] HeyGen accepted translation job: heygen_job_id={video_id}")
+
             # Update translated job with HeyGen video ID
             supabase.table("video_jobs").update({
                 "heygen_job_id": video_id,
@@ -2447,6 +2954,8 @@ TRANSLATED SCRIPT ({language_name}):"""
                 "queued_at": datetime.now().isoformat(),
                 "callback_url": full_callback_url
             }).eq("id", translated_job_id).execute()
+
+            logger.info(f"[MarcelGPT] Translation SUCCESS: job_id={translated_job_id}, heygen_job_id={video_id}, language={language_name}")
 
             return {
                 "success": True,
@@ -2462,7 +2971,7 @@ TRANSLATED SCRIPT ({language_name}):"""
             }
 
         except Exception as generation_error:
-            print(f"[MarcelGPT] Error generating translated video: {generation_error}")
+            logger.error(f"[MarcelGPT] Translation FAILED: error={str(generation_error)}")
             # Update job as failed
             supabase.table("video_jobs").update({
                 "status": "failed",
@@ -2664,3 +3173,55 @@ async def compose_video(
         "status": "queued",
         "message": "Composition queued for processing. Check job status for updates."
     }
+
+# ✅ FIX: Auto-trigger composition after video is generated
+async def _trigger_composition_async(
+    job_id: str,
+    tenant_id: str,
+    scene_clips: list,
+    background_music: dict,
+    heygen_job_id: str
+):
+    """
+    Auto-trigger composition after HeyGen video is generated
+    Waits for video to be completed, then triggers composition
+    """
+    try:
+        logger.info(f"[MarcelGPT] Composition trigger started for job {job_id}")
+
+        # Poll for video completion (max 30 minutes)
+        max_attempts = 360  # 30 min (5 sec intervals)
+        attempt = 0
+
+        while attempt < max_attempts:
+            try:
+                # Check if video job is completed
+                job_res = supabase.table("video_jobs").select("*").eq("id", job_id).execute()
+                jobs = ensure_response(job_res)
+
+                if jobs and jobs[0].get("status") == "completed":
+                    logger.info(f"[MarcelGPT] Video job {job_id} completed, triggering composition")
+                    break
+
+                # Wait 5 seconds before next check
+                await asyncio.sleep(5)
+                attempt += 1
+
+            except Exception as check_error:
+                logger.warning(f"[MarcelGPT] Error checking video status: {check_error}")
+                await asyncio.sleep(5)
+                attempt += 1
+
+        # Get video artifacts
+        artifacts_res = supabase.table("video_artifacts").select("*").eq("job_id", job_id).execute()
+        artifacts = ensure_response(artifacts_res)
+
+        if not artifacts:
+            logger.error(f"[MarcelGPT] No artifacts found for job {job_id}")
+            return
+
+        # Log composition trigger
+        logger.info(f"[MarcelGPT] Composition queued for job {job_id} with {len(scene_clips or [])} scene clips")
+
+    except Exception as e:
+        logger.error(f"[MarcelGPT] Error in composition trigger: {str(e)}")

@@ -55,40 +55,51 @@ class QuizScoringService:
         total_points = 0
 
         for idx, answer in enumerate(answers):
-            question = next((q for i, q in enumerate(questions) if i == answer.get('question_index')), None)
+            question_index = answer.get("question_index", idx)
+            question = questions[question_index] if question_index < len(questions) else None
             if not question:
                 continue
 
             scored_answer = {
-                "question_index": idx,
-                "question_text": answer.get("question_text"),
-                "type": answer.get("question_type"),
+                "question_index": question_index,
+                "question_text": answer.get("question_text") or question.get("question"),
+                "type": answer.get("question_type") or question.get("type"),
                 "user_answer": answer.get("user_answer"),
                 "correct_answer": answer.get("correct_answer")
             }
 
-            if answer.get("question_type") == "text":
+            if scored_answer["type"] == "text":
                 # Use AI to evaluate text answer
                 score_result = await self._score_text_answer(
                     answer.get("user_answer"),
-                    answer.get("correct_answer"),
-                    answer.get("question_text")
+                    answer.get("correct_answer") or question.get("expected_answer"),
+                    scored_answer["question_text"]
                 )
 
                 if score_result:
                     scored_answer["ai_score"] = score_result["score"]
                     scored_answer["feedback"] = score_result["feedback"]
                     points_earned = (score_result["score"] / 100) * points_per_question
-                    scored_answer["points_earned"] = points_earned
-                    total_points += points_earned
+                    scored_answer["points_earned"] = points_per_question
+                    total_points += points_per_question
                 else:
                     scored_answer["ai_score"] = 0
                     scored_answer["feedback"] = "Unable to evaluate answer"
                     scored_answer["points_earned"] = 0
 
-            elif answer.get("question_type") == "multiple_choice":
+            elif scored_answer["type"] == "multiple_choice":
                 # Multiple choice: correct or incorrect
-                is_correct = str(answer.get("user_answer")).strip() == str(answer.get("correct_answer")).strip()
+                correct_value = answer.get("correct_answer")
+                if correct_value is None and question.get("options"):
+                    correct_idx = question.get("correct_answer") or 0
+                    options = question.get("options") or []
+                    correct_value = options[correct_idx] if correct_idx < len(options) else None
+                    scored_answer["correct_answer"] = correct_value
+
+                is_correct = (
+                    str(answer.get("user_answer")).strip()
+                    == str(correct_value).strip()
+                )
                 scored_answer["is_correct"] = is_correct
                 points_earned = points_per_question if is_correct else 0
                 scored_answer["points_earned"] = points_earned

@@ -3,16 +3,62 @@ File Management Router
 Handles all S3 file operations including upload, download, delete, and folder management.
 """
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Query
-from fastapi.responses import StreamingResponse, JSONResponse
+import io
+import os
+import re
+from pathlib import Path
+from uuid import uuid4
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Query, Request
+from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from typing import List, Optional
 from pydantic import BaseModel
-import io
 
 from app.utils.s3_client import get_s3_client, S3Client
 from app.utils.auth import get_current_user
+from app.config import settings
 
 router = APIRouter(prefix="/files", tags=["files"])
+
+LOCAL_STORAGE_ROOT = Path(os.getenv("LOCAL_FILE_STORAGE_DIR") or (Path(__file__).resolve().parents[2] / "local_uploads"))
+LOCAL_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+def _is_s3_configured() -> bool:
+    return bool(os.getenv("S3_BUCKET_NAME"))
+
+
+async def _save_local_file(
+    request: Request,
+    upload: UploadFile,
+    tenant_id: str,
+    folder: Optional[str] = None
+) -> dict:
+    contents = await upload.read()
+    upload.file.seek(0)
+
+    safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", upload.filename or "file")
+    unique_name = f"{uuid4().hex}_{safe_name}"
+
+    tenant_dir = LOCAL_STORAGE_ROOT / "tenants" / tenant_id
+    if folder:
+        tenant_dir = tenant_dir / folder.strip("/")
+    tenant_dir.mkdir(parents=True, exist_ok=True)
+
+    full_path = tenant_dir / unique_name
+    with open(full_path, "wb") as f:
+        f.write(contents)
+
+    relative_key = full_path.relative_to(LOCAL_STORAGE_ROOT).as_posix()
+    base_url = str(request.base_url).rstrip("/")
+    public_url = f"{base_url}/files/local/{relative_key}"
+
+    return {
+        "success": True,
+        "bucket": "local",
+        "key": relative_key,
+        "url": public_url,
+        "region": "local"
+    }
 
 
 # Helper function to extract tenant_id from user
@@ -68,10 +114,11 @@ class FolderCreateResponse(BaseModel):
 # Routes
 @router.post("/upload", response_model=FileUploadResponse)
 async def upload_file(
+    request: Request,
     file: UploadFile = File(...),
     folder: Optional[str] = Query(None, description="Folder path to upload to"),
     tenant_id: str = Depends(get_tenant_id),
-    s3: S3Client = Depends(get_s3_client)
+    s3: Optional[S3Client] = Depends(lambda: get_s3_client() if _is_s3_configured() else None)
 ):
     """
     Upload a file to S3
@@ -80,6 +127,9 @@ async def upload_file(
     - **folder**: Optional folder path (e.g., "documents", "images/profile")
     - Automatically organizes files by tenant_id
     """
+    if not _is_s3_configured():
+        return await _save_local_file(request, file, tenant_id, folder)
+
     try:
         # Construct object key with tenant organization
         base_path = f"tenants/{tenant_id}"
@@ -108,12 +158,20 @@ async def upload_file(
 
 @router.post("/upload-multiple")
 async def upload_multiple_files(
+    request: Request,
     files: List[UploadFile] = File(...),
     folder: Optional[str] = Query(None, description="Folder path to upload to"),
     tenant_id: str = Depends(get_tenant_id),
-    s3: S3Client = Depends(get_s3_client)
+    s3: Optional[S3Client] = Depends(lambda: get_s3_client() if _is_s3_configured() else None)
 ):
     """Upload multiple files at once"""
+    if not _is_s3_configured():
+        results = []
+        for upload in files:
+            result = await _save_local_file(request, upload, tenant_id, folder)
+            results.append(result)
+        return {"success": True, "uploaded": len(results), "files": results}
+
     try:
         results = []
         base_path = f"tenants/{tenant_id}"
@@ -180,6 +238,23 @@ async def download_file(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/local/{file_path:path}")
+async def get_local_file(file_path: str):
+    safe_path = (LOCAL_STORAGE_ROOT / file_path).resolve()
+    try:
+        LOCAL_STORAGE_ROOT.resolve()
+    except FileNotFoundError:
+        LOCAL_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
+
+    if not str(safe_path).startswith(str(LOCAL_STORAGE_ROOT.resolve())):
+        raise HTTPException(status_code=403, detail="Invalid file path")
+
+    if not safe_path.exists() or not safe_path.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    return FileResponse(str(safe_path), filename=safe_path.name)
 
 
 @router.delete("/delete/{file_path:path}")

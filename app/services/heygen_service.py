@@ -534,9 +534,8 @@ class HeyGenService:
         if kwargs.get("language"):
             payload["language"] = kwargs["language"]
 
-        # Add subtitle settings if provided
-        if kwargs.get("enable_subtitles"):
-            payload["enable_subtitles"] = kwargs["enable_subtitles"]
+        # Add subtitle settings (enable by default)
+        payload["enable_subtitles"] = kwargs.get("enable_subtitles", True)  # ✅ FIX: Default True
         if kwargs.get("subtitle_language"):
             payload["subtitle_language"] = kwargs["subtitle_language"]
 

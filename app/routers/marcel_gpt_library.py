@@ -2,10 +2,11 @@
 Marcel GPT Library - Premade Videos and Worker Assignments
 """
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 import xml.etree.ElementTree as ET
 import re
 import json
+import logging
 
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, BackgroundTasks, Query
@@ -15,8 +16,14 @@ from app.config import settings
 from app.db.supabase_client import supabase
 from app.routers.deps import ensure_response, require_library_admin
 from app.utils.auth import get_current_user, require_permission
+from app.services.category_classifier import (
+    classify_script_categories,
+    VIDEO_CATEGORY_GROUPS,
+    YOUTUBE_CATEGORY_KEY,
+)
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 CHANNEL_ID_PATTERN = re.compile(r'["\']channelId["\']\s*:\s*["\'](UC[0-9A-Za-z_\-]{20,})["\']')
 BROWSE_ID_PATTERN = re.compile(r'["\']browseId["\']\s*:\s*["\'](UC[0-9A-Za-z_\-]{20,})["\']')
@@ -24,10 +31,19 @@ EXTERNAL_ID_PATTERN = re.compile(r'["\']externalChannelId["\']\s*:\s*["\'](UC[0-
 _CHANNEL_HANDLE_CACHE: dict[str, str] = {}
 
 
+class AssignmentDocumentInput(BaseModel):
+    file_name: str
+    public_url: Optional[str] = None
+    storage_key: Optional[str] = None
+    content_type: Optional[str] = None
+    file_size: Optional[int] = None
+
+
 class AssignVideosRequest(BaseModel):
     video_ids: List[str]
     worker_ids: List[str]
     notes: Optional[str] = None
+    documents: Optional[List[AssignmentDocumentInput]] = None
 
 
 class ImportPremadeVideoRequest(BaseModel):
@@ -38,6 +54,7 @@ class ImportPremadeVideoRequest(BaseModel):
     duration_seconds: Optional[int] = None
     category: Optional[str] = "External"
     tags: Optional[List[str]] = None
+    training_questions: Optional[List[Dict[str, Any]]] = None
 
 
 class YoutubeVideo(BaseModel):
@@ -47,6 +64,9 @@ class YoutubeVideo(BaseModel):
     published_at: str
     thumbnail_url: Optional[str] = None
     description: Optional[str] = None
+    main_category: Optional[str] = None
+    category_tags: Optional[List[str]] = None
+    category_metadata: Optional[Dict[str, Any]] = None
 
 
 # =========================================================================
@@ -143,6 +163,7 @@ async def import_premade_video(
         "duration_seconds": payload.duration_seconds,
         "category": payload.category or "External",
         "tags": payload.tags,
+        "training_questions": payload.training_questions or [],
         "updated_at": datetime.utcnow().isoformat()
     }
 
@@ -331,6 +352,18 @@ async def list_youtube_videos(
 
             url = link_elem.get("href") if link_elem is not None else f"https://www.youtube.com/watch?v={video_id_text}"
 
+            combined_text = f"{title_elem.text or ''}\n{description_elem.text or ''}"
+            classification = await classify_script_categories(combined_text, use_openai=False)
+
+            youtube_metadata: Dict[str, Any] = classification.copy() if isinstance(classification, dict) else {}
+            youtube_info = VIDEO_CATEGORY_GROUPS.get(YOUTUBE_CATEGORY_KEY, {})
+            youtube_metadata["main_category"] = YOUTUBE_CATEGORY_KEY
+            youtube_metadata["main_category_label"] = youtube_info.get("label", "SnSD YouTube Channel")
+            youtube_metadata["main_category_emoji"] = youtube_info.get("emoji", "🟦")
+            youtube_metadata.setdefault("tags", [])
+            youtube_metadata.setdefault("tag_labels", [])
+            youtube_metadata.setdefault("source", (classification or {}).get("source", "youtube_feed"))
+
             videos.append(
                 YoutubeVideo(
                     video_id=video_id_text,
@@ -338,7 +371,10 @@ async def list_youtube_videos(
                     url=url,
                     published_at=published_elem.text if published_elem is not None else "",
                     thumbnail_url=thumbnail_url,
-                    description=description_elem.text if description_elem is not None else None
+                    description=description_elem.text if description_elem is not None else None,
+                    main_category=YOUTUBE_CATEGORY_KEY,
+                    category_tags=youtube_metadata.get("tags"),
+                    category_metadata=youtube_metadata
                 )
             )
 
@@ -423,6 +459,45 @@ async def assign_videos_to_workers(
     except Exception as e:
         raise HTTPException(500, f"Failed to create assignments: {str(e)}")
 
+    assignment_rows = []
+    try:
+        fetch_res = supabase.table("marcel_gpt_video_assignments") \
+            .select("id, assigned_to") \
+            .eq("tenant_id", tenant_id) \
+            .eq("video_id", payload.video_ids[0]) \
+            .in_("assigned_to", payload.worker_ids) \
+            .execute()
+        assignment_rows = ensure_response(fetch_res) or []
+    except Exception as fetch_error:
+        logger.warning(f"[AssignVideos] Failed to fetch assignments for attachments: {fetch_error}")
+
+    if payload.documents and assignment_rows:
+        assignment_ids = [row["id"] for row in assignment_rows]
+        try:
+            supabase.table("marcel_gpt_assignment_documents") \
+                .delete() \
+                .in_("assignment_id", assignment_ids) \
+                .execute()
+        except Exception as delete_error:
+            logger.warning(f"[AssignVideos] Failed clearing old documents: {delete_error}")
+
+        documents_payload = []
+        for assignment in assignment_rows:
+            for doc in payload.documents or []:
+                documents_payload.append({
+                    "assignment_id": assignment["id"],
+                    "file_name": doc.file_name,
+                    "storage_key": doc.storage_key,
+                    "public_url": doc.public_url,
+                    "content_type": doc.content_type,
+                    "file_size": doc.file_size
+                })
+        if documents_payload:
+            try:
+                supabase.table("marcel_gpt_assignment_documents").insert(documents_payload).execute()
+            except Exception as doc_error:
+                logger.warning(f"[AssignVideos] Failed inserting documents: {doc_error}")
+
     # Send emails in background
     background_tasks.add_task(
         send_assignment_emails,
@@ -452,11 +527,12 @@ async def get_my_video_assignments(
             *,
             video:video_id (
                 id, title, description, video_url, thumbnail_url,
-                duration_seconds, category
+                duration_seconds, category, training_questions
             ),
             assigned_by_user:assigned_by (
                 id, full_name, email
-            )
+            ),
+            documents:marcel_gpt_assignment_documents(*)
         """) \
         .eq("assigned_to", user_id)
 
@@ -575,11 +651,12 @@ async def get_all_assignments(
     query = supabase.table("marcel_gpt_video_assignments") \
         .select(
             "id, status, created_at, video_id, assigned_to, "
-            "assigned_by, notes, viewed_at, completed_at, "
+            "assigned_by, notes, viewed_at, completed_at, quiz_score, quiz_completed_at, "
             "video:video_id(id, title, video_url, description, "
-            "duration_seconds, thumbnail_url, category), "
+            "duration_seconds, thumbnail_url, category, training_questions), "
             "assigned_to_user:assigned_to(id, email, full_name), "
-            "assigned_by_user:assigned_by(id, email, full_name)"
+            "assigned_by_user:assigned_by(id, email, full_name), "
+            "documents:marcel_gpt_assignment_documents(*)"
         ) \
         .eq("tenant_id", tenant_id)
 
@@ -614,6 +691,59 @@ async def get_all_assignments(
     }
 
 
+@router.get("/training-results")
+async def get_training_results(
+    user=Depends(get_current_user),
+    status: Optional[str] = Query(None)
+):
+    """Aggregated training results for admins (Company Admin / HSE Specialist)"""
+    require_library_admin(user)
+    require_permission(user, "marcel_gpt.view_library")
+
+    tenant_id = user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(400, "User not assigned to a tenant")
+
+    query = supabase.table("marcel_gpt_video_assignments") \
+        .select(
+            "id, status, created_at, video_id, assigned_to, "
+            "assigned_by, notes, viewed_at, completed_at, quiz_score, quiz_completed_at, "
+            "video:video_id(id, title, video_url, description, "
+            "duration_seconds, thumbnail_url, category, training_questions), "
+            "assigned_to_user:assigned_to(id, email, full_name), "
+            "assigned_by_user:assigned_by(id, email, full_name), "
+            "documents:marcel_gpt_assignment_documents(*)"
+        ) \
+        .eq("tenant_id", tenant_id) \
+        .order("created_at", desc=True)
+
+    if status:
+        query = query.eq("status", status)
+
+    res = query.execute()
+    assignments = ensure_response(res) or []
+
+    total = len(assignments)
+    completed = len([a for a in assignments if a.get("status") == "completed"])
+    viewed = len([a for a in assignments if a.get("status") == "viewed"])
+    pending = len([a for a in assignments if a.get("status") == "pending"])
+    scores = [a.get("quiz_score") for a in assignments if isinstance(a.get("quiz_score"), (int, float))]
+    avg_score = round(sum(scores) / len(scores), 2) if scores else None
+    quiz_completed = len([a for a in assignments if a.get("quiz_completed_at")])
+    quiz_completion_rate = (quiz_completed / total * 100) if total else 0
+
+    summary = {
+        "total_assignments": total,
+        "pending_assignments": pending,
+        "viewed_assignments": viewed,
+        "completed_assignments": completed,
+        "avg_quiz_score": avg_score,
+        "quiz_completion_rate": round(quiz_completion_rate, 2)
+    }
+
+    return {"summary": summary, "assignments": assignments}
+
+
 @router.post("/submit-quiz")
 async def submit_quiz(
     payload: dict = Body(...),
@@ -630,11 +760,11 @@ async def submit_quiz(
         raise HTTPException(400, "User not assigned to a tenant")
 
     assignment_id = payload.get("assignment_id")
-    video_id = payload.get("video_id")
+    raw_video_id = payload.get("video_id")
     answers = payload.get("answers", [])
 
-    if not assignment_id or not video_id or not answers:
-        raise HTTPException(400, "Missing required fields: assignment_id, video_id, answers")
+    if not assignment_id or not answers:
+        raise HTTPException(400, "Missing required fields: assignment_id and answers")
 
     try:
         # Get the assignment and video to access training questions
@@ -649,19 +779,40 @@ async def submit_quiz(
         if not assignment_data:
             raise HTTPException(404, "Assignment not found")
 
-        # Get video job with training questions
-        video_res = supabase.table("video_jobs") \
-            .select("training_questions") \
-            .eq("id", video_id) \
-            .eq("tenant_id", tenant_id) \
-            .limit(1) \
-            .execute()
+        assignment_video_id = assignment_data[0].get("video_id")
 
-        video_data = ensure_response(video_res)
-        if not video_data:
-            raise HTTPException(404, "Video not found")
+        training_questions: List[Dict[str, Any]] = []
+        if assignment_video_id:
+            video_res = supabase.table("marcel_gpt_premade_videos") \
+                .select("training_questions") \
+                .eq("id", assignment_video_id) \
+                .eq("tenant_id", tenant_id) \
+                .limit(1) \
+                .execute()
+            video_data = ensure_response(video_res)
+            if video_data:
+                training_questions = video_data[0].get("training_questions", []) or []
 
-        training_questions = video_data[0].get("training_questions", [])
+        video_job_id: Optional[int] = None
+        if raw_video_id is not None:
+            try:
+                video_job_id = int(raw_video_id)
+            except (TypeError, ValueError):
+                video_job_id = None
+
+        if training_questions == [] and video_job_id is not None:
+            video_job_res = supabase.table("video_jobs") \
+                .select("training_questions") \
+                .eq("id", video_job_id) \
+                .eq("tenant_id", tenant_id) \
+                .limit(1) \
+                .execute()
+            video_job_data = ensure_response(video_job_res)
+            if video_job_data:
+                training_questions = video_job_data[0].get("training_questions", []) or []
+
+        if not training_questions:
+            raise HTTPException(404, "Training questions not found for this video")
 
         # Score the answers
         from app.services.quiz_scoring_service import QuizScoringService
@@ -671,18 +822,43 @@ async def submit_quiz(
         score = scoring_result.get("score", 0)
         answered_questions = scoring_result.get("answers_with_scores", [])
 
+        supabase.table("video_quiz_answers") \
+            .delete() \
+            .eq("assignment_id", assignment_id) \
+            .eq("tenant_id", tenant_id) \
+            .execute()
+
+        question_lookup = {
+            idx: (question or {})
+            for idx, question in enumerate(training_questions)
+        }
+
         # Store each answer in database
         for answer_data in answered_questions:
+            q_index = answer_data.get("question_index")
+            question_def = question_lookup.get(q_index, {})
+            question_type = question_def.get("type")
+
+            correct_display = answer_data.get("correct_answer")
+            if question_type == "multiple_choice":
+                options = question_def.get("options") or []
+                correct_idx = question_def.get("correct_answer")
+                if correct_display is None and isinstance(correct_idx, int) and 0 <= correct_idx < len(options):
+                    correct_display = options[correct_idx]
+            elif question_type == "text":
+                correct_display = question_def.get("expected_answer") or correct_display
+
             answer_record = {
                 "tenant_id": tenant_id,
                 "assignment_id": assignment_id,
                 "user_id": user_id,
-                "video_id": video_id,
+                "video_id": video_job_id,
+                "video_uuid": assignment_video_id,
                 "question_index": answer_data.get("question_index"),
                 "question_text": answer_data.get("question_text"),
                 "question_type": answer_data.get("type"),
                 "user_answer": answer_data.get("user_answer"),
-                "correct_answer": str(answer_data.get("correct_answer")),
+                "correct_answer": correct_display,
                 "is_correct": answer_data.get("is_correct"),
                 "ai_score": answer_data.get("ai_score"),
                 "points_earned": answer_data.get("points_earned")
@@ -723,12 +899,13 @@ async def get_quiz_responses(
     user=Depends(get_current_user),
     assignment_id: Optional[str] = Query(None),
     video_id: Optional[str] = Query(None),
+    min_score: Optional[float] = Query(None, ge=0, le=100),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0)
 ):
     """
     Get quiz responses (admin view)
-    Shows all submitted quiz answers with scores
+    Groups answers per assignment so admins can review quiz performance.
     """
     require_library_admin(user)
     require_permission(user, "marcel_gpt.view_library")
@@ -738,48 +915,147 @@ async def get_quiz_responses(
         raise HTTPException(400, "User not assigned to a tenant")
 
     try:
-        # Build query
-        query = supabase.table("video_quiz_answers") \
+        base_query = supabase.table("video_quiz_answers") \
             .select(
-                "id, question_index, question_text, question_type, user_answer, "
-                "correct_answer, is_correct, ai_score, points_earned, created_at, "
-                "assignment:assignment_id(id, status, created_at), "
-                "user:user_id(id, email, full_name), "
-                "video:video_id(id, title)"
+                "id, assignment_id, user_id, video_id, question_index, question_text, "
+                "question_type, user_answer, correct_answer, is_correct, ai_score, "
+                "points_earned, created_at"
             ) \
             .eq("tenant_id", tenant_id)
 
         if assignment_id:
-            query = query.eq("assignment_id", assignment_id)
+            base_query = base_query.eq("assignment_id", assignment_id)
         if video_id:
-            query = query.eq("video_id", video_id)
+            base_query = base_query.eq("video_id", video_id)
 
-        # Get total count
-        count_res = supabase.table("video_quiz_answers") \
-            .select("id", count="exact") \
-            .eq("tenant_id", tenant_id)
-
-        if assignment_id:
-            count_res = count_res.eq("assignment_id", assignment_id)
-        if video_id:
-            count_res = count_res.eq("video_id", video_id)
-
-        count_res = count_res.execute()
-        total = count_res.count or 0
-
-        # Execute query with pagination
-        res = query \
+        answers_res = base_query \
             .order("created_at", desc=True) \
-            .range(offset, offset + limit - 1) \
+            .range(offset, offset + (limit * 3) - 1) \
             .execute()
 
-        if res.error:
-            raise HTTPException(400, str(res.error))
+        answers = ensure_response(answers_res) or []
 
-        responses = res.data or []
+        if not answers:
+            return {
+                "responses": [],
+                "total": 0,
+                "offset": offset,
+                "limit": limit
+            }
+
+        assignment_ids = {
+            answer.get("assignment_id") for answer in answers if answer.get("assignment_id")
+        }
+
+        assignments_map: Dict[str, Dict[str, Any]] = {}
+        if assignment_ids:
+            assignments_res = supabase.table("marcel_gpt_video_assignments") \
+                .select(
+                    "id, assigned_to, video_id, status, created_at, completed_at, "
+                    "quiz_score, quiz_completed_at"
+                ) \
+                .in_("id", list(assignment_ids)) \
+                .execute()
+            assignment_rows = ensure_response(assignments_res) or []
+            assignments_map = {row["id"]: row for row in assignment_rows if row.get("id")}
+
+        video_ids = {
+            assignment.get("video_id")
+            for assignment in assignments_map.values()
+            if assignment.get("video_id")
+        }
+        videos_map: Dict[str, Dict[str, Any]] = {}
+        if video_ids:
+            videos_res = supabase.table("marcel_gpt_premade_videos") \
+                .select("id, title") \
+                .in_("id", list(video_ids)) \
+                .execute()
+            video_rows = ensure_response(videos_res) or []
+            videos_map = {row["id"]: row for row in video_rows if row.get("id")}
+
+        profile_ids = {
+            assignment.get("assigned_to")
+            for assignment in assignments_map.values()
+            if assignment.get("assigned_to")
+        }
+        profiles_map: Dict[str, Dict[str, Any]] = {}
+        if profile_ids:
+            profiles_res = supabase.table("profiles") \
+                .select("id, email, full_name") \
+                .in_("id", list(profile_ids)) \
+                .execute()
+            profile_rows = ensure_response(profiles_res) or []
+            profiles_map = {row["id"]: row for row in profile_rows if row.get("id")}
+
+        grouped: Dict[str, Dict[str, Any]] = {}
+        for answer in answers:
+            assignment_key = answer.get("assignment_id")
+            if not assignment_key:
+                continue
+
+            assignment = assignments_map.get(assignment_key)
+            if not assignment:
+                continue
+
+            entry = grouped.setdefault(assignment_key, {
+                "id": assignment_key,
+                "assignment_id": assignment_key,
+                "video_id": assignment.get("video_id"),
+                "video_title": videos_map.get(assignment.get("video_id"), {}).get("title") or "Untitled Video",
+                "user_id": assignment.get("assigned_to"),
+                "user_name": profiles_map.get(assignment.get("assigned_to"), {}).get("full_name") or "Team member",
+                "user_email": profiles_map.get(assignment.get("assigned_to"), {}).get("email"),
+                "completed_at": assignment.get("quiz_completed_at") or assignment.get("completed_at") or assignment.get("created_at"),
+                "total_score": assignment.get("quiz_score"),
+                "responses": []
+            })
+
+            entry["responses"].append({
+                "question_index": answer.get("question_index"),
+                "question_text": answer.get("question_text"),
+                "question_type": answer.get("question_type"),
+                "user_answer": answer.get("user_answer"),
+                "correct_answer": answer.get("correct_answer"),
+                "is_correct": answer.get("is_correct"),
+                "ai_score": answer.get("ai_score"),
+                "points_earned": answer.get("points_earned") or 0,
+                "created_at": answer.get("created_at")
+            })
+
+        aggregated: List[Dict[str, Any]] = []
+        for entry in grouped.values():
+            responses = sorted(
+                entry["responses"],
+                key=lambda r: (r.get("question_index") if r.get("question_index") is not None else 0)
+            )
+            entry["responses"] = responses
+            if entry.get("total_score") is None and responses:
+                total_points = sum(resp.get("points_earned", 0) for resp in responses)
+                entry["total_score"] = round(min(total_points, 100), 2)
+            aggregated.append(entry)
+
+        if min_score is not None:
+            aggregated = [
+                entry for entry in aggregated
+                if (entry.get("total_score") or 0) >= min_score
+            ]
+
+        if video_id:
+            aggregated = [
+                entry for entry in aggregated
+                if entry.get("video_id") == video_id
+            ]
+
+        aggregated.sort(
+            key=lambda item: item.get("completed_at") or item.get("id"),
+            reverse=True
+        )
+
+        total = len(aggregated)
+        paginated = aggregated[offset: offset + limit]
 
         return {
-            "data": responses,
+            "responses": paginated,
             "total": total,
             "offset": offset,
             "limit": limit

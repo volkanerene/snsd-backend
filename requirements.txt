@@ -8,6 +8,7 @@ aiohttp
 openai
 PyPDF2
 python-pptx
+langdetect
 
 pydantic>=2.0
 pydantic-settings>=2.2
