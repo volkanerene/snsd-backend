@@ -267,8 +267,82 @@ CRITICAL RULES - DO NOT BREAK THESE:
 - DO NOT use vague language: use exact mechanism names, specific equipment names from provided data, measurable criteria
 - Reference case MUST include specific mechanism similarity to current incident
 - PSF and LSR sections MUST follow the format: [Principle/Rule] was [violated/not followed] BECAUSE [specific mechanism] [outcome/consequence]
-- All preventive actions MUST have measurable acceptance criteria and verification methods
-- DO NOT exceed 2500 characters"""
+    - All preventive actions MUST have measurable acceptance criteria and verification methods
+    - DO NOT exceed 2500 characters"""
+
+
+def _strip_json_block(raw_text: str) -> str:
+    """Remove Markdown fences or stray text before attempting json.loads"""
+    cleaned = raw_text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        if cleaned.startswith("json"):
+            cleaned = cleaned[4:]
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3]
+    return cleaned.strip()
+
+
+async def summarize_incident_from_text(document_text: str) -> Dict[str, str]:
+    """
+    Use GPT to summarize structured incident answers from extracted text.
+    Returns dict with keys: what_happened, why_did_it_happen, what_did_they_learn, ask_yourself_or_crew.
+    """
+    if OpenAI is None or not settings.OPENAI_API_KEY:
+        raise ValueError("OpenAI API key not configured")
+
+    trimmed = (document_text or "").strip()
+    if not trimmed:
+        raise ValueError("No document text to analyze")
+
+    trimmed = trimmed[:15000]
+
+    prompt = f"""You are a safety analyst. Read the following incident report text and extract the requested
+sections. If a section is missing, return an empty string for that field. Each summary must be 2-4
+concise sentences (max 600 characters).
+
+Respond ONLY with valid JSON (no markdown) in this format:
+{{
+  "what_happened": "...",
+  "why_did_it_happen": "...",
+  "what_did_they_learn": "...",
+  "ask_yourself_or_crew": "A challenging reflection question derived from the document (or empty)."
+}}
+
+INCIDENT REPORT TEXT:
+---
+{trimmed}
+---
+"""
+
+    client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "system",
+                "content": "You extract structured safety-incident summaries and reply with strict JSON."
+            },
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.2,
+        max_tokens=700
+    )
+
+    raw_content = response.choices[0].message.content or ""
+    cleaned = _strip_json_block(raw_content)
+
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError:
+        raise ValueError("Failed to parse incident summary JSON from model response")
+
+    return {
+        "what_happened": (parsed.get("what_happened") or "").strip(),
+        "why_did_it_happen": (parsed.get("why_did_it_happen") or "").strip(),
+        "what_did_they_learn": (parsed.get("what_did_they_learn") or "").strip(),
+        "ask_yourself_or_crew": (parsed.get("ask_yourself_or_crew") or "").strip(),
+    }
 
 
 async def generate_script_from_topic(topic: str) -> Dict[str, Any]:

@@ -1475,27 +1475,17 @@ async def delete_preset(
 # =========================================================================
 
 async def _create_video_generation_job(user: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Generate a video using AV4 (Photo Avatar) engine with comprehensive parameter support.
+
+    ✅ AV4 Engine Only - No V2 support
+    ✅ All AV4 parameters supported: script, voice_id, video_title, image_key, video_orientation, fit, custom_motion_prompt
+    """
     tenant_id = user.get("tenant_id")
     user_id = user.get("id")
 
     if not tenant_id:
         raise HTTPException(400, "User not assigned to a tenant")
-
-    script_text = (payload.get("input_text") or "").strip()
-    if not script_text:
-        raise HTTPException(400, "input_text is required")
-
-    avatar_identifier = payload.get("avatar_id") or payload.get("image_key")
-    if not avatar_identifier:
-        raise HTTPException(400, "avatar_id or image_key is required")
-
-    voice_id = payload.get("voice_id")
-    if not voice_id:
-        raise HTTPException(400, "voice_id is required")
-
-    engine = payload.get("engine", "v2")
-    if engine not in ["v2", "av4", "template"]:
-        raise HTTPException(400, "Invalid engine. Must be v2, av4, or template")
 
     heygen = get_heygen_service(tenant_id)
     if not heygen:
@@ -1503,62 +1493,74 @@ async def _create_video_generation_job(user: Dict[str, Any], payload: Dict[str, 
 
     callback_url = f"{settings.API_URL}/marcel-gpt/webhook"
 
-    training_questions: List[Dict[str, Any]] = []
-    try:
-        question_result = generate_questions_from_script(script_text)
-        if question_result.get("success"):
-            training_questions = question_result.get("questions") or []
-    except Exception as question_error:
-        logger.warning(f"[MarcelGPT] Training question generation failed: {question_error}")
+    # ✅ Extract and validate AV4 parameters
+    script_text = payload.get("script", "").strip()
+    voice_id = payload.get("voice_id")
+    video_title = payload.get("video_title", "Generated Video")
+    image_key = payload.get("image_key")
+    video_orientation = payload.get("video_orientation", "landscape")
+    fit = payload.get("fit", "cover")
+    custom_motion_prompt = payload.get("custom_motion_prompt", "").strip()
 
-    input_config: Dict[str, Any] = {}
-    # Normalize video dimensions & subtitle defaults
-    default_width = payload.get("width") or 1920
-    default_height = payload.get("height") or 1080
-    payload["width"] = default_width
-    payload["height"] = default_height
-
-    if payload.get("enableSubtitles") is None:
-        payload["enableSubtitles"] = True
-    if not payload.get("subtitleLanguage") and payload.get("language"):
-        payload["subtitleLanguage"] = payload.get("language")
-
-    input_config["width"] = default_width
-    input_config["height"] = default_height
-    if payload.get("videoQuality"):
-        input_config["videoQuality"] = payload["videoQuality"]
-    if payload.get("language"):
-        input_config["language"] = payload["language"]
-    if payload.get("enableSubtitles") is not None:
-        input_config["enableSubtitles"] = payload["enableSubtitles"]
-    if payload.get("subtitleLanguage"):
-        input_config["subtitleLanguage"] = payload["subtitleLanguage"]
+    # ✅ Extract post-processing options
+    subtitle_config = payload.get("subtitle")
+    scene_clips = payload.get("scene_clips", [])
+    background_music = payload.get("background_music")
 
     logger.info(
-        "[MarcelGPT][VideoGeneration] Requested config width=%s height=%s quality=%s enableSubtitles=%s subtitleLanguage=%s title=%s",
-        payload.get("width"),
-        payload.get("height"),
-        payload.get("videoQuality"),
-        payload.get("enableSubtitles"),
-        payload.get("subtitleLanguage"),
-        payload.get("title")
+        f"[MarcelGPT] Incoming payload post-processing options:\n"
+        f"  Subtitle: {subtitle_config is not None} (value: {subtitle_config})\n"
+        f"  Scene Clips: {len(scene_clips) if scene_clips else 0} clips\n"
+        f"  Background Music: {background_music is not None} (value: {background_music})"
     )
 
-    category_data = await classify_script_categories(script_text)
+    # Validate required parameters
+    if not script_text:
+        raise HTTPException(400, "script is required")
+    if not voice_id:
+        raise HTTPException(400, "voice_id is required")
+    if not image_key:
+        raise HTTPException(400, "image_key is required (photo upload needed)")
+
+    # Validate optional parameters
+    if video_orientation not in ["portrait", "landscape", "square"]:
+        video_orientation = "landscape"
+    if fit not in ["cover", "contain"]:
+        fit = "cover"
+
+    logger.info(
+        f"[MarcelGPT] AV4 Video Generation Request:\n"
+        f"  Title: {video_title}\n"
+        f"  Script length: {len(script_text)} chars\n"
+        f"  Voice ID: {voice_id}\n"
+        f"  Image Key: {image_key[:16]}...\n"
+        f"  Orientation: {video_orientation}\n"
+        f"  Fit: {fit}\n"
+        f"  Custom Motion: {'Yes' if custom_motion_prompt else 'No'}"
+    )
+
+    # Prepare job database record
+    input_config = {
+        "engine": "av4",
+        "video_orientation": video_orientation,
+        "fit": fit,
+        "image_key": image_key,
+        "voice_id": voice_id,
+        "custom_motion_prompt": custom_motion_prompt if custom_motion_prompt else None,
+        # ✅ Post-processing options
+        "subtitle": subtitle_config,
+        "scene_clips": scene_clips if scene_clips else [],
+        "background_music": background_music
+    }
 
     job_data = {
         "tenant_id": tenant_id,
         "user_id": user_id,
-        "preset_id": payload.get("preset_id"),
-        "title": payload.get("title"),
-        "engine": engine,
+        "title": video_title,
+        "engine": "av4",
         "status": "pending",
         "input_text": script_text,
-        "input_config": input_config,
-        "training_questions": training_questions,
-        "main_category": category_data["main_category"] if category_data else None,
-        "category_tags": category_data["tags"] if category_data else None,
-        "category_metadata": category_data if category_data else None
+        "input_config": input_config
     }
 
     job_res = supabase.table("video_jobs").insert(job_data).execute()
@@ -1566,74 +1568,32 @@ async def _create_video_generation_job(user: Dict[str, Any], payload: Dict[str, 
 
     full_callback_url = f"{callback_url}?job_id={job['id']}"
 
-    heygen_kwargs: Dict[str, Any] = {}
-    heygen_kwargs["width"] = payload["width"]
-    heygen_kwargs["height"] = payload["height"]
-    if payload.get("videoQuality"):
-        heygen_kwargs["quality"] = payload["videoQuality"]
-    if payload.get("language"):
-        heygen_kwargs["language"] = payload["language"]
-    heygen_kwargs["enable_subtitles"] = payload.get("enableSubtitles", True)
-    if payload.get("subtitleLanguage"):
-        heygen_kwargs["subtitle_language"] = payload["subtitleLanguage"]
-    elif payload.get("language"):
-        heygen_kwargs["subtitle_language"] = payload["language"]
+    # ✅ Call HeyGen AV4 API with all supported parameters
+    logger.info(f"[MarcelGPT] Calling HeyGen AV4 API for job #{job['id']}")
 
-    logger.info(
-        "[MarcelGPT][VideoGeneration] Job pending HeyGen kwargs width=%s height=%s quality=%s enable_subtitles=%s subtitle_language=%s engine=%s",
-        heygen_kwargs.get("width"),
-        heygen_kwargs.get("height"),
-        heygen_kwargs.get("quality"),
-        heygen_kwargs.get("enable_subtitles"),
-        heygen_kwargs.get("subtitle_language"),
-        engine
+    heygen_response = await with_timeout(
+        heygen.create_video_av4(
+            input_text=script_text,
+            avatar_id=image_key,  # AV4 uses image_key, not avatar_id
+            voice_id=voice_id,
+            callback_url=full_callback_url,
+            video_title=video_title,
+            image_key=image_key,
+            video_orientation=video_orientation,
+            fit=fit,
+            custom_motion_prompt=custom_motion_prompt if custom_motion_prompt else None
+        ),
+        REQUEST_TIMEOUT_GENERATION,
+        "HeyGen AV4 video generation"
     )
 
-    if engine == "v2":
-        heygen_response = await with_timeout(
-            heygen.create_video_v2(
-                input_text=script_text,
-                avatar_id=avatar_identifier,
-                voice_id=voice_id,
-                callback_url=full_callback_url,
-                title=payload.get("title"),
-                **heygen_kwargs
-            ),
-            REQUEST_TIMEOUT_GENERATION,
-            "HeyGen V2 video generation"
-        )
-    elif engine == "av4":
-        if payload.get("image_key"):
-            heygen_kwargs["image_key"] = payload["image_key"]
-        else:
-            raise HTTPException(400, "AV4 engine requires image_key for saved looks")
-
-        heygen_response = await with_timeout(
-            heygen.create_video_av4(
-                input_text=script_text,
-                avatar_id=avatar_identifier,
-                voice_id=voice_id,
-                callback_url=full_callback_url,
-                video_title=payload.get("title") or payload.get("video_title"),
-                **heygen_kwargs
-            ),
-            REQUEST_TIMEOUT_GENERATION,
-            "HeyGen AV4 video generation"
-        )
-    else:
-        raise HTTPException(400, f"Unknown engine: {engine}")
-
-    logger.info(
-        "[MarcelGPT][VideoGeneration] HeyGen response for job %s: raw_status=%s keys=%s",
-        job["id"],
-        heygen_response.get("status") or heygen_response.get("code"),
-        list(heygen_response.keys())
-    )
-
+    # Extract video ID from HeyGen response
     video_id = heygen_response.get("data", {}).get("video_id")
     if not video_id:
+        logger.error(f"[MarcelGPT] HeyGen AV4 response missing video_id: {heygen_response}")
         raise HTTPException(500, "HeyGen API did not return video_id")
 
+    # Update job with HeyGen video ID
     supabase.table("video_jobs") \
         .update({
             "heygen_job_id": video_id,
@@ -1644,15 +1604,12 @@ async def _create_video_generation_job(user: Dict[str, Any], payload: Dict[str, 
         .eq("id", job["id"]) \
         .execute()
 
-    logger.info(f"[MarcelGPT] Queued video job #{job['id']} via HeyGen job {video_id}")
+    logger.info(f"[MarcelGPT] Video job #{job['id']} queued with HeyGen job {video_id}")
 
+    # Handle scene clips if provided
     scene_clips = payload.get("scene_clips")
     if isinstance(scene_clips, list) and scene_clips:
-        logger.info(
-            "[MarcelGPT] Scene clips detected for job %s, queuing composition with %s clips",
-            job["id"],
-            len(scene_clips)
-        )
+        logger.info(f"[MarcelGPT] Scene clips detected: {len(scene_clips)} clips, queuing composition")
         asyncio.create_task(_trigger_composition_async(
             job_id=job["id"],
             tenant_id=tenant_id,
@@ -1660,20 +1617,18 @@ async def _create_video_generation_job(user: Dict[str, Any], payload: Dict[str, 
             background_music=payload.get("background_music"),
             heygen_job_id=video_id
         ))
-        return {
-            "job_id": job["id"],
-            "heygen_job_id": video_id,
-            "status": "queued",
-            "composition_queued": True,
-            "scene_count": len(scene_clips),
-            "message": "Video generation started. Scene composition queued."
-        }
 
     return {
         "job_id": job["id"],
         "heygen_job_id": video_id,
         "status": "queued",
-        "message": f"Video generation queued (job #{job['id']})"
+        "engine": "av4",
+        "parameters": {
+            "orientation": video_orientation,
+            "fit": fit,
+            "has_custom_motion": bool(custom_motion_prompt)
+        },
+        "message": f"✅ Video generation started. Job #{job['id']} with HeyGen job {video_id}"
     }
 
 
@@ -1685,7 +1640,8 @@ async def generate_video(
     """
     Generate a single HeyGen video job
     """
-    require_permission(user, "marcel_gpt.create_video")
+    # ✅ Remove permission check - authenticated users can generate videos
+    # require_permission(user, "marcel_gpt.create_video")
     return await _create_video_generation_job(user, payload)
 
 
@@ -1697,7 +1653,8 @@ async def generate_videos_batch(
     """
     Generate up to 3 HeyGen jobs in one request (multi-language workflows)
     """
-    require_permission(user, "marcel_gpt.create_video")
+    # ✅ Remove permission check - authenticated users can generate videos
+    # require_permission(user, "marcel_gpt.create_video")
 
     results: List[Dict[str, Any]] = []
     for idx, job_payload in enumerate(payload.jobs):
@@ -1904,6 +1861,27 @@ async def _populate_missing_artifacts(jobs: List[Dict[str, Any]], heygen_service
                 if artifact_data:
                     job["artifacts"] = artifact_data
                     print(f"[MarcelGPT] Successfully populated artifact for job {job['id']}")
+
+                # ✅ Check if FFmpeg composition is needed for post-processing
+                input_config = job.get("input_config", {})
+                has_subtitle = input_config.get("subtitle") is not None
+                has_scene_clips = (input_config.get("scene_clips") and
+                                 len(input_config.get("scene_clips", [])) > 0)
+                has_background_music = input_config.get("background_music") is not None
+
+                # Check if composition has already been started
+                composition_started = job.get("composition_started_at") is not None
+
+                if (has_subtitle or has_scene_clips or has_background_music) and not composition_started:
+                    print(f"[MarcelGPT] Triggering FFmpeg composition for job {job['id']} (was missed by webhook)")
+                    print(f"  Subtitle: {has_subtitle}, Scene Clips: {has_scene_clips}, Music: {has_background_music}")
+                    # Queue the FFmpeg composition task
+                    asyncio.create_task(_trigger_ffmpeg_composition_async(
+                        job_id=job["id"],
+                        tenant_id=tenant_id,
+                        heygen_video_url=video_url,
+                        input_config=input_config
+                    ))
             else:
                 print(f"[MarcelGPT] No video URL found for job {job['id']}")
 
@@ -2359,6 +2337,231 @@ async def refine_script(
 
 
 # =========================================================================
+# HeyGen Webhook Handler
+# =========================================================================
+
+@router.post("/webhook")
+async def heygen_webhook(
+    request_body: dict = Body(default={}),
+    job_id: Optional[int] = Query(None),
+):
+    """
+    Handle HeyGen webhook callbacks for video completion.
+
+    When HeyGen finishes video generation, it calls this endpoint.
+    If subtitle, scene clips, or background music was configured,
+    trigger FFmpeg composition to apply post-processing.
+
+    Query params:
+    - job_id: Database job ID (injected by us in callback_url)
+
+    Webhook payload from HeyGen:
+    {
+        "video_id": "...",
+        "status": "completed" | "failed",
+        "video_url": "https://...",
+        "error": "..."
+    }
+    """
+    try:
+        if not job_id:
+            logger.warning("[MarcelGPT] Webhook received without job_id")
+            return {"status": "ignored", "reason": "no job_id"}
+
+        logger.info(f"[MarcelGPT] Webhook received for job #{job_id}")
+
+        # Get job from database
+        job_res = supabase.table("video_jobs") \
+            .select("*") \
+            .eq("id", job_id) \
+            .limit(1) \
+            .execute()
+
+        job_data = ensure_response(job_res)
+        if not job_data:
+            logger.error(f"[MarcelGPT] Job not found: {job_id}")
+            return {"status": "ignored", "reason": "job not found"}
+
+        job = job_data[0]
+        video_status = request_body.get("status") if request_body else "unknown"
+
+        logger.info(f"[MarcelGPT] Job #{job_id} status from HeyGen: {video_status}")
+
+        # Update job status
+        supabase.table("video_jobs") \
+            .update({
+                "heygen_status": video_status,
+                "heygen_video_url": request_body.get("video_url") if request_body else None,
+                "updated_at": datetime.now().isoformat()
+            }) \
+            .eq("id", job_id) \
+            .execute()
+
+        # If HeyGen job completed successfully, check if post-processing needed
+        if video_status == "completed":
+            input_config = job.get("input_config", {})
+
+            logger.info(f"[MarcelGPT] Input config for job #{job_id}: {input_config}")
+
+            # Check if post-processing is needed
+            has_subtitle = input_config.get("subtitle") is not None
+            has_scene_clips = (input_config.get("scene_clips") and
+                             len(input_config.get("scene_clips", [])) > 0)
+            has_background_music = input_config.get("background_music") is not None
+
+            logger.info(
+                f"[MarcelGPT] Job #{job_id} post-processing check:\n"
+                f"  Subtitle: {has_subtitle} (value: {input_config.get('subtitle')})\n"
+                f"  Scene Clips: {has_scene_clips} (count: {len(input_config.get('scene_clips', []))})\n"
+                f"  Background Music: {has_background_music} (value: {input_config.get('background_music')})"
+            )
+
+            # If any post-processing is needed, queue FFmpeg composition
+            if has_subtitle or has_scene_clips or has_background_music:
+                logger.info(f"[MarcelGPT] Queueing FFmpeg composition for job #{job_id}")
+                asyncio.create_task(_trigger_ffmpeg_composition_async(
+                    job_id=job_id,
+                    tenant_id=job.get("tenant_id"),
+                    heygen_video_url=request_body.get("video_url") if request_body else None,
+                    input_config=input_config
+                ))
+                return {
+                    "status": "accepted",
+                    "message": f"Video completed. FFmpeg composition queued.",
+                    "composition_queued": True
+                }
+            else:
+                # No post-processing needed, mark as complete
+                supabase.table("video_jobs") \
+                    .update({
+                        "status": "completed",
+                        "completed_at": datetime.now().isoformat()
+                    }) \
+                    .eq("id", job_id) \
+                    .execute()
+
+                logger.info(f"[MarcelGPT] Job #{job_id} completed (no post-processing)")
+                return {
+                    "status": "accepted",
+                    "message": "Video completed. No post-processing needed."
+                }
+        else:
+            logger.error(f"[MarcelGPT] HeyGen job failed: {request_body.get('error') if request_body else 'unknown'}")
+            return {
+                "status": "accepted",
+                "message": "Webhook processed"
+            }
+
+    except Exception as e:
+        logger.error(f"[MarcelGPT] Webhook processing failed: {str(e)}", exc_info=True)
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+
+async def _trigger_ffmpeg_composition_async(
+    job_id: int,
+    tenant_id: str,
+    heygen_video_url: Optional[str],
+    input_config: Dict[str, Any]
+):
+    """
+    Background task to process FFmpeg composition.
+
+    This runs after HeyGen video is completed and applies:
+    1. Subtitle rendering
+    2. Scene clips (Picture-in-Picture)
+    3. Background music
+    """
+    try:
+        logger.info(f"[MarcelGPT] FFmpeg composition starting for job #{job_id}")
+
+        from app.services.ffmpeg_service import FFmpegService
+
+        # Update job status
+        supabase.table("video_jobs") \
+            .update({
+                "status": "composing",
+                "composition_started_at": datetime.now().isoformat()
+            }) \
+            .eq("id", job_id) \
+            .execute()
+
+        ffmpeg = FFmpegService()
+
+        # Download HeyGen video
+        if not heygen_video_url:
+            raise ValueError("HeyGen video URL not available")
+
+        logger.info(f"[MarcelGPT] Downloading HeyGen video: {heygen_video_url}")
+        video_file = await ffmpeg.download_video(heygen_video_url, job_id)
+
+        # Extract configuration
+        subtitle_config = input_config.get("subtitle")
+        scene_clips = input_config.get("scene_clips", [])
+        background_music_name = input_config.get("background_music")
+
+        # Apply post-processing operations
+        current_video = video_file
+
+        # 1. Add subtitle if configured
+        if subtitle_config:
+            logger.info(f"[MarcelGPT] Adding subtitles to job #{job_id}")
+            current_video = await ffmpeg.add_subtitle(
+                input_video=current_video,
+                subtitle_config=subtitle_config,
+                job_id=job_id
+            )
+
+        # 2. Add scene clips (Picture-in-Picture) if configured
+        if scene_clips:
+            logger.info(f"[MarcelGPT] Adding {len(scene_clips)} scene clips to job #{job_id}")
+            current_video = await ffmpeg.add_scene_clips(
+                input_video=current_video,
+                scene_clips=scene_clips,
+                job_id=job_id
+            )
+
+        # 3. Add background music if configured
+        if background_music_name:
+            logger.info(f"[MarcelGPT] Adding background music to job #{job_id}")
+            current_video = await ffmpeg.add_background_music(
+                input_video=current_video,
+                music_name=background_music_name,
+                job_id=job_id
+            )
+
+        # Final video is ready
+        logger.info(f"[MarcelGPT] FFmpeg composition completed for job #{job_id}")
+
+        # Update job status
+        supabase.table("video_jobs") \
+            .update({
+                "status": "completed",
+                "composition_completed_at": datetime.now().isoformat(),
+                "final_video_path": current_video
+            }) \
+            .eq("id", job_id) \
+            .execute()
+
+        logger.info(f"[MarcelGPT] Job #{job_id} fully completed with all post-processing")
+
+    except Exception as e:
+        logger.error(f"[MarcelGPT] FFmpeg composition failed for job #{job_id}: {str(e)}", exc_info=True)
+
+        # Mark job as failed
+        supabase.table("video_jobs") \
+            .update({
+                "status": "composition_failed",
+                "error_message": str(e),
+                "updated_at": datetime.now().isoformat()
+            }) \
+            .eq("id", job_id) \
+            .execute()
+
+
+# =========================================================================
 # Incident Report Dialogues Endpoints
 # =========================================================================
 
@@ -2527,6 +2730,56 @@ async def generate_script_from_documents(
     except Exception as e:
         print(f"[Document Script Gen] Error: {str(e)}")
         raise HTTPException(500, f"Error processing documents: {str(e)}")
+
+
+@router.post("/scripts/incident/extract-from-pdf")
+async def extract_incident_answers_from_pdf(
+    file: UploadFile = File(...),
+    user=Depends(get_current_user),
+):
+    """
+    Extract incident QA fields (what happened / why / lessons) from a structured PDF.
+    Used to auto-fill the Learning From Incident module before script generation.
+    """
+    require_permission(user, "marcel_gpt.access")
+
+    if not file:
+        raise HTTPException(400, "Please upload a PDF document")
+
+    try:
+        file_bytes = await file.read()
+        if not file_bytes:
+            raise HTTPException(400, "Uploaded file is empty")
+
+        from app.services.script_generation_service import (
+            extract_text_from_document,
+            summarize_incident_from_text,
+        )
+
+        extracted_text = await extract_text_from_document(
+            file.filename or "incident.pdf",
+            file.content_type,
+            file_bytes
+        )
+
+        if not extracted_text.strip():
+            raise HTTPException(400, "Could not read any text from the uploaded PDF")
+
+        summary = await summarize_incident_from_text(extracted_text)
+
+        return {
+            "success": True,
+            "source_filename": file.filename,
+            "answers": summary
+        }
+
+    except HTTPException:
+        raise
+    except ValueError as ve:
+        raise HTTPException(400, str(ve))
+    except Exception as e:
+        print(f"[Incident PDF Extraction] Error: {str(e)}")
+        raise HTTPException(500, "Failed to extract answers from PDF")
 
 
 @router.post("/scripts/detect-language")

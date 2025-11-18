@@ -346,6 +346,66 @@ async def update_session(
 # Form Submission Endpoints
 # ================================================
 
+def _get_existing_submission(data: FormSubmissionCreate):
+    existing = ensure_response(
+        supabase.table("evren_gpt_form_submissions")
+        .select("*")
+        .eq("session_id", data.session_id)
+        .eq("contractor_id", data.contractor_id)
+        .eq("form_id", data.form_id)
+        .eq("cycle", data.cycle)
+        .limit(1)
+        .execute()
+    )
+    if isinstance(existing, list):
+        return existing
+    return [existing] if existing else []
+
+
+@router.post("/forms/save-draft", response_model=FormSubmissionResponse)
+async def save_form_draft(
+    data: FormSubmissionCreate,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Save or update a draft submission for supervisor forms (FRM32-35).
+    """
+    existing = _get_existing_submission(data)
+    now = datetime.now().isoformat()
+
+    if existing:
+        submission = ensure_response(
+            supabase.table("evren_gpt_form_submissions")
+            .update({
+                "answers": data.answers,
+                "status": "pending",
+                "updated_at": now
+            })
+            .eq("session_id", data.session_id)
+            .eq("contractor_id", data.contractor_id)
+            .eq("form_id", data.form_id)
+            .eq("cycle", data.cycle)
+            .execute()
+        )
+        return submission[0] if isinstance(submission, list) else submission
+
+    payload = {
+        "session_id": data.session_id,
+        "contractor_id": data.contractor_id,
+        "form_id": data.form_id,
+        "cycle": data.cycle,
+        "answers": data.answers,
+        "status": "pending",
+        "submitted_by": current_user["id"],
+        "created_at": now,
+        "updated_at": now
+    }
+    submission = ensure_response(
+        supabase.table("evren_gpt_form_submissions").insert(payload).execute()
+    )
+    return submission[0]
+
+
 @router.post("/forms/submit", response_model=FormSubmissionResponse)
 async def submit_form(
     data: FormSubmissionCreate,
@@ -354,30 +414,60 @@ async def submit_form(
 ):
     """
     Submit a form (FRM32-35)
-    - Stores submission
+    - Stores submission (upsert)
     - Triggers n8n webhook for AI processing
     """
-    # Set submitted_by from current user
-    submission_data = data.dict()
-    submission_data['submitted_by'] = current_user['id']
-    submission_data['submitted_at'] = datetime.now().isoformat()
-    submission_data['status'] = 'submitted'
+    existing = _get_existing_submission(data)
+    now = datetime.now().isoformat()
+    previous_status = None
 
-    # Create submission
-    submission = ensure_response(
-        supabase.table("evren_gpt_form_submissions").insert(submission_data).execute()
-    )
+    if existing:
+        previous_status = existing[0]['status']
+        submission = ensure_response(
+            supabase.table("evren_gpt_form_submissions")
+            .update({
+                "answers": data.answers,
+                "status": "submitted",
+                "submitted_by": current_user["id"],
+                "submitted_at": now,
+                "updated_at": now
+            })
+            .eq("session_id", data.session_id)
+            .eq("contractor_id", data.contractor_id)
+            .eq("form_id", data.form_id)
+            .eq("cycle", data.cycle)
+            .execute()
+        )
+        submission_record = submission[0] if isinstance(submission, list) else submission
+    else:
+        payload = {
+            "session_id": data.session_id,
+            "contractor_id": data.contractor_id,
+            "form_id": data.form_id,
+            "cycle": data.cycle,
+            "answers": data.answers,
+            "status": "submitted",
+            "submitted_by": current_user["id"],
+            "submitted_at": now,
+            "created_at": now,
+            "updated_at": now
+        }
+        submission = ensure_response(
+            supabase.table("evren_gpt_form_submissions").insert(payload).execute()
+        )
+        submission_record = submission[0]
 
-    # TODO: Trigger n8n webhook for AI processing
-    # For now, we'll just mark it as pending
-    # webhook_url = f"https://n8n.snsdconsultant.com/webhook/evren-gpt/{data.form_id}"
-    # requests.post(webhook_url, json=submission[0])
+    # Trigger next form in background if this is a new submission state
+    if data.form_id != "frm35" and previous_status != "submitted":
+        background_tasks.add_task(
+            trigger_next_form,
+            data.session_id,
+            data.contractor_id,
+            data.form_id,
+            data.cycle
+        )
 
-    # Trigger next form in background if this is not FRM35
-    if data.form_id != "frm35":
-        background_tasks.add_task(trigger_next_form, data.session_id, data.contractor_id, data.form_id, data.cycle)
-
-    return submission[0]
+    return submission_record
 
 
 @router.get("/forms/submissions", response_model=List[FormSubmissionResponse])
@@ -385,6 +475,7 @@ async def list_form_submissions(
     session_id: Optional[str] = None,
     contractor_id: Optional[str] = None,
     form_id: Optional[str] = None,
+    cycle: Optional[int] = None,
     status: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
@@ -408,6 +499,9 @@ async def list_form_submissions(
 
     if form_id:
         query = query.eq("form_id", form_id)
+
+    if cycle:
+        query = query.eq("cycle", cycle)
 
     if status:
         query = query.eq("status", status)

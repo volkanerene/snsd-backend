@@ -467,7 +467,11 @@ class HeyGenService:
         if kwargs.get("language"):
             payload["language"] = kwargs["language"]
 
-        # Add subtitle settings if provided
+        # Add caption (subtitles) - V2 API uses "caption" for subtitles
+        if kwargs.get("caption") is not None:
+            payload["caption"] = kwargs["caption"]  # ✅ FIX: V2 uses 'caption' for subtitles
+
+        # Add subtitle settings if provided (for compatibility)
         if kwargs.get("enable_subtitles"):
             payload["enable_subtitles"] = kwargs["enable_subtitles"]
         if kwargs.get("subtitle_language"):
@@ -486,21 +490,28 @@ class HeyGenService:
         **kwargs
     ) -> Dict:
         """
-        Create video using AV4 API (for saved looks with image_key only)
+        Create video using AV4 API (Photo Avatar) with comprehensive parameter support.
+
+        ✅ AV4 Engine Only - Photo avatars with saved looks
+        ✅ All supported parameters are passed through to HeyGen API
 
         Args:
-            input_text: Text for avatar to speak (script parameter)
-            avatar_id: Not used (kept for compatibility)
+            input_text: Script text for avatar to speak
+            avatar_id: Not used by AV4 (kept for interface compatibility)
             voice_id: Voice ID from catalog
-            callback_url: Webhook URL for completion
+            callback_url: Webhook URL for completion notification
             video_title: Title for the video (required by HeyGen AV4 API)
-            **kwargs: Additional parameters:
-                - image_key: REQUIRED - For saved looks/photo avatars
-                - width: Video width (default: 1280)
-                - height: Video height (default: 720)
+            **kwargs: AV4-specific parameters:
+                - image_key: REQUIRED - Photo/saved look identifier
+                - video_orientation: Optional - 'portrait', 'landscape' (default), or 'square'
+                - fit: Optional - 'cover' (crop) or 'contain' (letterbox, default)
+                - custom_motion_prompt: Optional - Custom instructions for avatar motion
 
         Returns:
             Job response with video_id
+
+        ⚠️ AV4 does NOT support: width, height, quality, language, subtitles, caption
+        These are V2-only parameters and will be ignored if provided.
         """
         # AV4 API expects "script" as the text parameter
         payload = {
@@ -518,27 +529,23 @@ class HeyGenService:
 
         payload["image_key"] = kwargs["image_key"]
 
-        # Add dimensions - always include width and height
-        if kwargs.get("width"):
-            payload["width"] = kwargs["width"]
-        if kwargs.get("height"):
-            payload["height"] = kwargs["height"]
-        if kwargs.get("speed"):
-            payload["speed"] = kwargs["speed"]
+        # ⚠️ AV4 API DOES NOT support: width, height, quality, language, enable_subtitles, subtitle_language
+        # Only the following are supported by HeyGen AV4:
+        # - script, voice_id, video_title, image_key, video_orientation, fit
 
-        # Add quality setting if provided (low, medium, high)
-        if kwargs.get("quality"):
-            payload["quality"] = kwargs["quality"]
+        # Add video_orientation if provided (portrait/landscape)
+        if kwargs.get("video_orientation"):
+            payload["video_orientation"] = kwargs["video_orientation"]
 
-        # Add language if provided
-        if kwargs.get("language"):
-            payload["language"] = kwargs["language"]
+        # Add fit if provided (cover/contain)
+        if kwargs.get("fit"):
+            payload["fit"] = kwargs["fit"]
 
-        # Add subtitle settings (enable by default)
-        payload["enable_subtitles"] = kwargs.get("enable_subtitles", True)  # ✅ FIX: Default True
-        if kwargs.get("subtitle_language"):
-            payload["subtitle_language"] = kwargs["subtitle_language"]
+        # Add custom motion prompt if provided
+        if kwargs.get("custom_motion_prompt"):
+            payload["custom_motion_prompt"] = kwargs["custom_motion_prompt"]
 
+        # Add webhook if provided
         if callback_url:
             payload["webhook_url"] = callback_url
 

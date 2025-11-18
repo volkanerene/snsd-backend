@@ -53,10 +53,13 @@ async def list_submissions(
       - status
       - contractor_id
       - evaluation_period  (örn: '2025-01', '2025-09', '2025-Q3' vs.)
+
+    Returns submissions with related contractor details (name)
     """
+    # Select all submission fields plus contractor name via JOIN
     query = (
         supabase.table("frm32_submissions")
-        .select("*")
+        .select("*, contractors(name)")
         .eq("tenant_id", tenant_id)
         .range(offset, offset + limit - 1)
         .order("created_at", desc=True)
@@ -69,7 +72,26 @@ async def list_submissions(
         query = query.eq("evaluation_period", evaluation_period)  # <-- FİLTRE
 
     res = query.execute()
-    return ensure_response(res)
+    data = ensure_response(res)
+
+    # Flatten contractor details from nested object to top level for easier mobile consumption
+    if isinstance(data, list):
+        flattened = []
+        for submission in data:
+            if isinstance(submission, dict):
+                # If contractors is a list with one item, extract it
+                contractors_data = submission.get("contractors")
+                if isinstance(contractors_data, list) and contractors_data:
+                    contractor_info = contractors_data[0]
+                    submission["contractor_name"] = contractor_info.get("name")
+                elif isinstance(contractors_data, dict):
+                    submission["contractor_name"] = contractors_data.get("name")
+                # Remove the nested contractors object
+                submission.pop("contractors", None)
+                flattened.append(submission)
+        return flattened
+
+    return data
 
 
 @router.post("/submissions")
@@ -153,9 +175,10 @@ async def get_submission(
     user=Depends(get_current_user),
     tenant_id: str = Depends(require_tenant),
 ):
+    # Select all submission fields plus contractor name via JOIN
     res = (
         supabase.table("frm32_submissions")
-        .select("*")
+        .select("*, contractors(name)")
         .eq("id", submission_id)
         .eq("tenant_id", tenant_id)
         .limit(1)
@@ -164,9 +187,22 @@ async def get_submission(
     data = ensure_response(res)
     if not data:
         raise HTTPException(404, "Not found")
-    if isinstance(data, list):
-        return data[0]
-    return data
+
+    # Handle both list and dict responses
+    submission = data[0] if isinstance(data, list) else data
+
+    # Flatten contractor details from nested object to top level
+    if isinstance(submission, dict):
+        contractors_data = submission.get("contractors")
+        if isinstance(contractors_data, list) and contractors_data:
+            contractor_info = contractors_data[0]
+            submission["contractor_name"] = contractor_info.get("name")
+        elif isinstance(contractors_data, dict):
+            submission["contractor_name"] = contractors_data.get("name")
+        # Remove the nested contractors object
+        submission.pop("contractors", None)
+
+    return submission
 
 
 @router.put("/submissions/{submission_id}")

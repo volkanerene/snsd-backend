@@ -35,11 +35,11 @@ async def get_me(user=Depends(get_current_user)):
     # Check if profile exists but is INCOMPLETE (NULL critical fields)
     # This happens when Supabase auto-creates an empty profile on auth user creation
     if data:
-        is_incomplete = (
-            not data.get("tenant_id") or
-            not data.get("contractor_id") or
-            not data.get("email")
-        )
+        profile_missing_email = not data.get("email")
+        missing_tenant = not data.get("tenant_id")
+        missing_contractor = not data.get("contractor_id")
+        # Only treat as incomplete if email missing, or both tenant & contractor missing
+        is_incomplete = profile_missing_email or (missing_tenant and missing_contractor)
 
         print(f"[/profiles/me] Profile found, incomplete={is_incomplete}")
         if is_incomplete:
