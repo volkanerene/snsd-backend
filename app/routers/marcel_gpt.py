@@ -369,6 +369,44 @@ class VideoCompositionRequest(BaseModel):
     fade_out: float = 1.0
 
 
+# =========================================================================
+# Post-Production Models
+# =========================================================================
+
+class LogoOverlayConfig(BaseModel):
+    """Configuration for logo/image overlay"""
+    image_url: str  # URL to logo/image to overlay
+    start_time: float = 0.0  # When logo appears (seconds)
+    end_time: float = 5.0  # When logo disappears (seconds)
+    position: Literal["top_left", "top_right", "bottom_left", "bottom_right", "center"] = "top_right"
+    width: int = 150  # Logo width in pixels
+    height: int = 100  # Logo height in pixels
+
+
+class VideoOverlayConfig(BaseModel):
+    """Configuration for video overlay (Picture-in-Picture)"""
+    video_url: str  # URL to video to overlay
+    start_time: float = 0.0  # When overlay starts (seconds)
+    end_time: float = 10.0  # When overlay ends (seconds)
+    position_x: float = 0.65  # Normalized X position (0-1)
+    position_y: float = 0.05  # Normalized Y position (0-1)
+    scale: float = 0.3  # Size scale relative to main video (0-1)
+
+
+class BackgroundMusicConfig(BaseModel):
+    """Configuration for background music"""
+    music_url: str  # URL to music file
+    music_volume: float = 0.3  # Background music volume (0.0-1.0)
+    video_volume: float = 0.7  # Original video volume (0.0-1.0)
+
+
+class PostProductionRequest(BaseModel):
+    """Request to apply post-production effects to a video"""
+    logo_overlay: Optional[LogoOverlayConfig] = None
+    video_overlay: Optional[VideoOverlayConfig] = None
+    background_music: Optional[BackgroundMusicConfig] = None
+
+
 def serialize_photo_avatar_look(record: Dict[str, Any]) -> Dict[str, Any]:
     config = record.get("config") or {}
     meta = record.get("meta") or {}
@@ -3542,3 +3580,345 @@ async def _trigger_composition_async(
 
     except Exception as e:
         logger.error(f"[MarcelGPT] Error in composition trigger: {str(e)}")
+
+
+# =========================================================================
+# Post-Production Endpoints
+# =========================================================================
+
+@router.post("/videos/{job_id}/post-production")
+async def apply_post_production(
+    job_id: str,
+    user=Depends(get_current_user),
+    # Logo overlay
+    logo_overlay_url: str = None,
+    logo_overlay_file: UploadFile = None,
+    logo_overlay_position: str = None,
+    logo_overlay_start_time: float = None,
+    logo_overlay_end_time: float = None,
+    logo_overlay_width: int = None,
+    logo_overlay_height: int = None,
+    # Video overlay
+    video_overlay_url: str = None,
+    video_overlay_file: UploadFile = None,
+    video_overlay_start_time: float = None,
+    video_overlay_end_time: float = None,
+    video_overlay_position_x: float = None,
+    video_overlay_position_y: float = None,
+    video_overlay_scale: float = None,
+    # Background music
+    background_music_url: str = None,
+    background_music_file: UploadFile = None,
+    background_music_volume: float = None,
+    video_volume: float = None,
+):
+    """
+    Apply post-production effects to a video (logo overlay, video overlay, background music).
+    Supports both URL and file uploads.
+
+    NOTE: This endpoint queues post-production asynchronously and returns immediately.
+    The processing happens in the background. Check /videos/{job_id} for status.
+    """
+    require_permission(user, "modules.access_marcel_gpt")
+
+    tenant_id = user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(400, "User not assigned to a tenant")
+
+    # Validate that at least one effect is requested
+    has_logo = logo_overlay_url or logo_overlay_file
+    has_video = video_overlay_url or video_overlay_file
+    has_music = background_music_url or background_music_file
+
+    if not (has_logo or has_video or has_music):
+        raise HTTPException(400, "At least one post-production effect must be specified")
+
+    # Fetch the original video job
+    try:
+        job_res = supabase.table("video_jobs").select("*").eq("id", job_id).eq("tenant_id", tenant_id).execute()
+        jobs = ensure_response(job_res)
+
+        if not jobs:
+            raise HTTPException(404, f"Video job {job_id} not found")
+
+        original_job = jobs[0]
+    except Exception as e:
+        logger.error(f"[MarcelGPT] Error fetching job: {e}")
+        raise HTTPException(500, "Failed to fetch video job")
+
+    # Get the video artifact (HeyGen video URL)
+    try:
+        artifacts_res = supabase.table("video_artifacts").select("*").eq("job_id", job_id).execute()
+        artifacts = ensure_response(artifacts_res)
+
+        if not artifacts:
+            raise HTTPException(404, f"No video artifacts found for job {job_id}")
+
+        artifact = artifacts[0]
+        base_video_url = artifact.get("heygen_url") or artifact.get("signed_url")
+
+        if not base_video_url:
+            raise HTTPException(400, "No video URL available for post-production")
+    except Exception as e:
+        logger.error(f"[MarcelGPT] Error fetching artifacts: {e}")
+        raise HTTPException(500, "Failed to fetch video artifacts")
+
+    # Create a new post-production job record
+    post_production_job = {
+        "tenant_id": tenant_id,
+        "parent_job_id": int(job_id),
+        "script": original_job.get("script", ""),
+        "status": "queued",
+        "post_production_metadata": {
+            "logo_overlay": {
+                "url": logo_overlay_url,
+                "file": bool(logo_overlay_file),
+                "position": logo_overlay_position,
+                "start_time": float(logo_overlay_start_time) if logo_overlay_start_time else None,
+                "end_time": float(logo_overlay_end_time) if logo_overlay_end_time else None,
+                "width": int(logo_overlay_width) if logo_overlay_width else None,
+                "height": int(logo_overlay_height) if logo_overlay_height else None,
+            } if has_logo else None,
+            "video_overlay": {
+                "url": video_overlay_url,
+                "file": bool(video_overlay_file),
+                "start_time": float(video_overlay_start_time) if video_overlay_start_time else None,
+                "end_time": float(video_overlay_end_time) if video_overlay_end_time else None,
+                "position_x": float(video_overlay_position_x) if video_overlay_position_x else None,
+                "position_y": float(video_overlay_position_y) if video_overlay_position_y else None,
+                "scale": float(video_overlay_scale) if video_overlay_scale else None,
+            } if has_video else None,
+            "background_music": {
+                "url": background_music_url,
+                "file": bool(background_music_file),
+                "music_volume": float(background_music_volume) if background_music_volume else None,
+                "video_volume": float(video_volume) if video_volume else None,
+            } if has_music else None,
+            "applied_at": datetime.now().isoformat()
+        }
+    }
+
+    try:
+        new_job_res = supabase.table("video_jobs").insert(post_production_job).execute()
+        new_job = ensure_response(new_job_res)[0]
+        new_job_id = new_job.get("id")
+    except Exception as e:
+        logger.error(f"[MarcelGPT] Error creating post-production job: {e}")
+        raise HTTPException(500, "Failed to create post-production job")
+
+    # Queue post-production as background task
+    async def _run_post_production_async():
+        """Background task to apply post-production effects without blocking the endpoint"""
+        from app.services.ffmpeg_service import FFmpegService
+        import tempfile as tmp
+
+        try:
+            # Update job status to processing
+            supabase.table("video_jobs").update({
+                "status": "processing",
+                "updated_at": datetime.now().isoformat()
+            }).eq("id", new_job_id).execute()
+
+            ffmpeg_service = FFmpegService()
+            current_video_path = None
+            output_video_path = None
+
+            try:
+                # Download base video to temp location
+                with tmp.NamedTemporaryFile(suffix=".mp4", delete=False) as temp_base:
+                    current_video_path = temp_base.name
+                    async with httpx.AsyncClient(timeout=300.0) as client:
+                        async with client.stream("GET", base_video_url) as response:
+                            if response.status_code != 200:
+                                raise Exception(f"Failed to download video: HTTP {response.status_code}")
+                            async for chunk in response.aiter_bytes(chunk_size=8192):
+                                temp_base.write(chunk)
+
+                logger.info(f"[MarcelGPT] Base video downloaded for post-production job {new_job_id}")
+
+                # Apply logo overlay if specified
+                if has_logo:
+                    try:
+                        logo_path = None
+                        # Save logo file or download from URL
+                        with tmp.NamedTemporaryFile(suffix=".png", delete=False) as temp_logo:
+                            logo_path = temp_logo.name
+                            if logo_overlay_file:
+                                # Use uploaded file
+                                content = await logo_overlay_file.read()
+                                temp_logo.write(content)
+                            else:
+                                # Download from URL
+                                async with httpx.AsyncClient(timeout=60.0) as client:
+                                    async with client.stream("GET", logo_overlay_url) as response:
+                                        if response.status_code != 200:
+                                            raise Exception(f"Failed to download logo: HTTP {response.status_code}")
+                                        async for chunk in response.aiter_bytes(chunk_size=8192):
+                                            temp_logo.write(chunk)
+
+                        # Apply logo overlay using FFmpeg service
+                        output_video_path = await ffmpeg_service.add_logo_overlay(
+                            input_video=current_video_path,
+                            logo_image=logo_path,
+                            job_id=new_job_id,
+                            start_time=float(logo_overlay_start_time) if logo_overlay_start_time else 0,
+                            end_time=float(logo_overlay_end_time) if logo_overlay_end_time else 5,
+                            position=logo_overlay_position or "top_right",
+                            width=int(logo_overlay_width) if logo_overlay_width else 150,
+                            height=int(logo_overlay_height) if logo_overlay_height else 100
+                        )
+                        current_video_path = output_video_path
+                        logger.info(f"[MarcelGPT] Logo overlay applied for job {new_job_id}")
+                    except Exception as logo_error:
+                        logger.error(f"[MarcelGPT] Logo overlay failed: {str(logo_error)}")
+                        raise
+
+                # Apply video overlay if specified
+                if has_video:
+                    try:
+                        overlay_path = None
+                        # Save video file or download from URL
+                        with tmp.NamedTemporaryFile(suffix=".mp4", delete=False) as temp_overlay:
+                            overlay_path = temp_overlay.name
+                            if video_overlay_file:
+                                # Use uploaded file
+                                content = await video_overlay_file.read()
+                                temp_overlay.write(content)
+                            else:
+                                # Download from URL
+                                async with httpx.AsyncClient(timeout=300.0) as client:
+                                    async with client.stream("GET", video_overlay_url) as response:
+                                        if response.status_code != 200:
+                                            raise Exception(f"Failed to download overlay video: HTTP {response.status_code}")
+                                        async for chunk in response.aiter_bytes(chunk_size=8192):
+                                            temp_overlay.write(chunk)
+
+                        # Apply video overlay as Picture-in-Picture
+                        scene_clips = [{
+                            "file": overlay_path,
+                            "startTime": float(video_overlay_start_time) if video_overlay_start_time else 0,
+                            "endTime": float(video_overlay_end_time) if video_overlay_end_time else 10,
+                            "position": {
+                                "x": float(video_overlay_position_x) if video_overlay_position_x else 0.65,
+                                "y": float(video_overlay_position_y) if video_overlay_position_y else 0.05,
+                                "scale": float(video_overlay_scale) if video_overlay_scale else 0.3
+                            }
+                        }]
+                        output_video_path = await ffmpeg_service.add_scene_clips(
+                            input_video=current_video_path,
+                            scene_clips=scene_clips,
+                            job_id=new_job_id
+                        )
+                        current_video_path = output_video_path
+                        logger.info(f"[MarcelGPT] Video overlay applied for job {new_job_id}")
+                    except Exception as overlay_error:
+                        logger.error(f"[MarcelGPT] Video overlay failed: {str(overlay_error)}")
+                        raise
+
+                # Apply background music if specified
+                if has_music:
+                    try:
+                        music_path = None
+                        # Save music file or download from URL
+                        with tmp.NamedTemporaryFile(suffix=".mp3", delete=False) as temp_music:
+                            music_path = temp_music.name
+                            if background_music_file:
+                                # Use uploaded file
+                                content = await background_music_file.read()
+                                temp_music.write(content)
+                            else:
+                                # Download from URL
+                                async with httpx.AsyncClient(timeout=300.0) as client:
+                                    async with client.stream("GET", background_music_url) as response:
+                                        if response.status_code != 200:
+                                            raise Exception(f"Failed to download music: HTTP {response.status_code}")
+                                        async for chunk in response.aiter_bytes(chunk_size=8192):
+                                            temp_music.write(chunk)
+
+                        # Apply background music
+                        output_video_path = await ffmpeg_service.add_background_music(
+                            input_video=current_video_path,
+                            music_name=music_path,
+                            job_id=new_job_id,
+                            music_volume=float(background_music_volume) if background_music_volume else 0.3,
+                            video_volume=float(video_volume) if video_volume else 0.7
+                        )
+                        current_video_path = output_video_path
+                        logger.info(f"[MarcelGPT] Background music applied for job {new_job_id}")
+                    except Exception as music_error:
+                        logger.error(f"[MarcelGPT] Background music failed: {str(music_error)}")
+                        raise
+
+                # Upload final video to Supabase storage
+                if current_video_path and os.path.exists(current_video_path):
+                    try:
+                        # Read the final video file
+                        with open(current_video_path, 'rb') as video_file:
+                            video_data = video_file.read()
+
+                        # Upload to Supabase storage
+                        storage_path = f"marcel-gpt/post-production/{new_job_id}/video.mp4"
+                        supabase.storage.from_("video-artifacts").upload(
+                            storage_path,
+                            video_data
+                        )
+
+                        # Get public URL for the uploaded video
+                        public_url = supabase.storage.from_("video-artifacts").get_public_url(storage_path)
+
+                        # Create artifact record
+                        supabase.table("video_artifacts").insert({
+                            "job_id": new_job_id,
+                            "heygen_url": public_url,
+                            "storage_key": storage_path,
+                            "signed_url": public_url,
+                            "duration": None,  # Could be calculated if needed
+                            "thumbnail_url": None,
+                            "meta": {
+                                "source": "post_production",
+                                "parent_job_id": job_id
+                            },
+                            "created_at": datetime.now().isoformat()
+                        }).execute()
+
+                        # Update job status
+                        supabase.table("video_jobs").update({
+                            "status": "completed",
+                            "updated_at": datetime.now().isoformat()
+                        }).eq("id", new_job_id).execute()
+
+                        logger.info(f"[MarcelGPT] Post-production completed for job {new_job_id}")
+                    except Exception as upload_error:
+                        logger.error(f"[MarcelGPT] Failed to upload post-produced video: {str(upload_error)}")
+                        raise
+
+            finally:
+                # Cleanup temporary files
+                if current_video_path and os.path.exists(current_video_path):
+                    try:
+                        os.remove(current_video_path)
+                    except Exception as cleanup_error:
+                        logger.warning(f"[MarcelGPT] Failed to cleanup temp file: {cleanup_error}")
+
+        except Exception as e:
+            logger.error(f"[MarcelGPT] Post-production error: {str(e)}")
+            try:
+                supabase.table("video_jobs").update({
+                    "status": "failed",
+                    "error_message": str(e),
+                    "updated_at": datetime.now().isoformat()
+                }).eq("id", new_job_id).execute()
+            except Exception as db_error:
+                logger.error(f"[MarcelGPT] Failed to update job status: {db_error}")
+
+    # Fire and forget - queue the background task
+    asyncio.create_task(_run_post_production_async())
+
+    # Return immediately with queued status
+    return {
+        "success": True,
+        "job_id": new_job_id,
+        "parent_job_id": job_id,
+        "status": "queued",
+        "message": "Post-production queued for processing. Check job status for updates."
+    }

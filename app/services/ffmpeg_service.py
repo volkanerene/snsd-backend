@@ -233,11 +233,91 @@ class FFmpegService:
             logger.error(f"[FFmpeg] Scene clip addition failed: {str(e)}")
             raise
 
+    async def add_logo_overlay(
+        self,
+        input_video: str,
+        logo_image: str,
+        job_id: int,
+        start_time: float = 0,
+        end_time: float = 5,
+        position: str = "top_right",
+        width: int = 150,
+        height: int = 100
+    ) -> str:
+        """
+        Add logo/image overlay to video for specified time range.
+
+        Args:
+            input_video: Path to input video
+            logo_image: Path to logo image file
+            job_id: Database job ID
+            start_time: Start time in seconds (default 0)
+            end_time: End time in seconds (default 5)
+            position: Position - 'top_left', 'top_right', 'bottom_left', 'bottom_right', 'center'
+            width: Logo width in pixels
+            height: Logo height in pixels
+
+        Returns:
+            Path to video with logo overlay
+        """
+        try:
+            logger.info(f"[FFmpeg] Adding logo overlay to job #{job_id} from {start_time}s to {end_time}s")
+
+            # Position mappings
+            positions = {
+                "top_left": "x=20:y=20",
+                "top_right": f"x=W-w-20:y=20",
+                "bottom_left": "x=20:y=H-h-20",
+                "bottom_right": f"x=W-w-20:y=H-h-20",
+                "center": "x=(W-w)/2:y=(H-h)/2"
+            }
+
+            pos_str = positions.get(position, positions["top_right"])
+
+            # Build overlay filter
+            overlay_filter = (
+                f"[1:v]scale={width}:{height}[logo]; "
+                f"[0:v][logo]overlay={pos_str}:enable='between(t,{start_time},{end_time})'[out]"
+            )
+
+            output_path = f"{self.tmp_dir}/logo_job_{job_id}.mp4"
+
+            cmd = [
+                self.ffmpeg_path,
+                "-i", input_video,
+                "-i", logo_image,
+                "-filter_complex", overlay_filter,
+                "-map", "[out]",
+                "-map", "0:a",
+                "-c:v", "libx264",
+                "-preset", "medium",
+                "-crf", "23",
+                "-c:a", "aac",
+                "-b:a", "128k",
+                "-y",
+                output_path
+            ]
+
+            logger.info(f"[FFmpeg] Running logo overlay command")
+            result = await self._run_ffmpeg(cmd)
+
+            if result == 0:
+                logger.info(f"[FFmpeg] Logo overlay added successfully to job #{job_id}")
+                return output_path
+            else:
+                raise RuntimeError(f"FFmpeg logo overlay operation failed with code {result}")
+
+        except Exception as e:
+            logger.error(f"[FFmpeg] Logo overlay addition failed: {str(e)}")
+            raise
+
     async def add_background_music(
         self,
         input_video: str,
         music_name: str,
-        job_id: int
+        job_id: int,
+        music_volume: float = 0.3,
+        video_volume: float = 0.7
     ) -> str:
         """
         Add background music to video and mix audio tracks.
@@ -246,6 +326,8 @@ class FFmpegService:
             input_video: Path to video
             music_name: Name/path of music file
             job_id: Database job ID
+            music_volume: Background music volume (0.0 - 1.0, default 0.3)
+            video_volume: Original video volume (0.0 - 1.0, default 0.7)
 
         Returns:
             Path to video with background music
@@ -253,9 +335,12 @@ class FFmpegService:
         try:
             logger.info(f"[FFmpeg] Adding background music '{music_name}' to job #{job_id}")
 
-            # Build audio mixing filter
-            # Mix original audio at 0.7 volume with background music at 0.3 volume
-            audio_filter = "[0:a]volume=0.7[original];[1:a]volume=0.3[music];[original][music]amix=inputs=2:duration=first[out]"
+            # Build audio mixing filter with custom volumes
+            audio_filter = (
+                f"[0:a]volume={video_volume}[original];"
+                f"[1:a]volume={music_volume}[music];"
+                f"[original][music]amix=inputs=2:duration=first[out]"
+            )
 
             output_path = f"{self.tmp_dir}/music_job_{job_id}.mp4"
 
@@ -267,7 +352,9 @@ class FFmpegService:
                 "-map", "0:v",      # Use video from first input
                 "-map", "[out]",    # Use mixed audio
                 "-shortest",        # Stop at shortest stream
-                "-c:v", "copy",     # Copy video codec
+                "-c:v", "libx264",  # Re-encode video
+                "-preset", "medium",
+                "-crf", "23",
                 "-c:a", "aac",      # Encode audio to AAC
                 "-b:a", "192k",
                 "-y",

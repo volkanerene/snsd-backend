@@ -2,10 +2,13 @@
 EvrenGPT Evaluation Process Router
 Handles the complete EvrenGPT evaluation workflow from session creation to final scoring
 """
-from fastapi import APIRouter, Depends, HTTPException, Header, BackgroundTasks
+import logging
+from fastapi import APIRouter, Depends, HTTPException, Header, BackgroundTasks, Body
 from typing import List, Optional
 from datetime import datetime, timedelta
 from decimal import Decimal
+
+logger = logging.getLogger(__name__)
 
 from app.schemas.evren_gpt import (
     EvrenGPTSessionCreate,
@@ -751,3 +754,271 @@ async def get_tenant_evren_gpt_stats(
     stats['total_forms_submitted'] = sum(s['total_submissions'] for s in stats['form_stats'])
 
     return stats
+
+
+# =====================================================================
+# FRM33, FRM34, FRM35 Submission Endpoints (Supervisor Forms)
+# =====================================================================
+
+@router.post("/frm33/save")
+async def save_frm33(
+    data: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Save FRM33 submission"""
+    try:
+        contractor_id = data.get("contractor_id")
+        form_submission_id = data.get("form_submission_id")  # Could be null
+        answers = data.get("answers", {})
+
+        if not contractor_id:
+            raise HTTPException(status_code=400, detail="contractor_id is required")
+
+        # Insert or update FRM33 submission
+        response = supabase.table("frm33_submissions").upsert({
+            "contractor_id": contractor_id,
+            "form_submission_id": form_submission_id,
+            "answers": answers,
+            "status": "draft",
+            "created_by": current_user["id"],
+            "updated_at": "now()"
+        }, on_conflict="contractor_id").execute()
+
+        return {"status": "success", "data": response.data}
+    except Exception as e:
+        logger.error(f"Error saving FRM33: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/frm34/save")
+async def save_frm34(
+    data: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Save FRM34 submission"""
+    try:
+        contractor_id = data.get("contractor_id")
+        form_submission_id = data.get("form_submission_id")
+        answers = data.get("answers", {})
+
+        if not contractor_id:
+            raise HTTPException(status_code=400, detail="contractor_id is required")
+
+        response = supabase.table("frm34_submissions").upsert({
+            "contractor_id": contractor_id,
+            "form_submission_id": form_submission_id,
+            "answers": answers,
+            "status": "draft",
+            "created_by": current_user["id"],
+            "updated_at": "now()"
+        }, on_conflict="contractor_id").execute()
+
+        return {"status": "success", "data": response.data}
+    except Exception as e:
+        logger.error(f"Error saving FRM34: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/frm35/save")
+async def save_frm35(
+    data: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Save FRM35 submission"""
+    try:
+        contractor_id = data.get("contractor_id")
+        form_submission_id = data.get("form_submission_id")
+        answers = data.get("answers", {})
+
+        if not contractor_id:
+            raise HTTPException(status_code=400, detail="contractor_id is required")
+
+        response = supabase.table("frm35_submissions").upsert({
+            "contractor_id": contractor_id,
+            "form_submission_id": form_submission_id,
+            "answers": answers,
+            "status": "draft",
+            "created_by": current_user["id"],
+            "updated_at": "now()"
+        }, on_conflict="contractor_id").execute()
+
+        return {"status": "success", "data": response.data}
+    except Exception as e:
+        logger.error(f"Error saving FRM35: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/frm33/{contractor_id}")
+async def get_frm33(
+    contractor_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get FRM33 submission for contractor"""
+    try:
+        response = supabase.table("frm33_submissions")\
+            .select("*")\
+            .eq("contractor_id", contractor_id)\
+            .execute()
+        return response.data
+    except Exception as e:
+        logger.error(f"Error getting FRM33: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/frm34/{contractor_id}")
+async def get_frm34(
+    contractor_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get FRM34 submission for contractor"""
+    try:
+        response = supabase.table("frm34_submissions")\
+            .select("*")\
+            .eq("contractor_id", contractor_id)\
+            .execute()
+        return response.data
+    except Exception as e:
+        logger.error(f"Error getting FRM34: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/frm35/{contractor_id}")
+async def get_frm35(
+    contractor_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get FRM35 submission for contractor"""
+    try:
+        response = supabase.table("frm35_submissions")\
+            .select("*")\
+            .eq("contractor_id", contractor_id)\
+            .execute()
+        return response.data
+    except Exception as e:
+        logger.error(f"Error getting FRM35: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/frm33/submit")
+async def submit_frm33(
+    data: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Submit FRM33 - marks status as submitted"""
+    try:
+        contractor_id = data.get("contractor_id")
+        answers = data.get("answers", {})
+
+        if not contractor_id:
+            raise HTTPException(status_code=400, detail="contractor_id is required")
+
+        response = supabase.table("frm33_submissions").upsert({
+            "contractor_id": contractor_id,
+            "answers": answers,
+            "status": "submitted",
+            "created_by": current_user["id"],
+            "updated_at": "now()"
+        }, on_conflict="contractor_id").execute()
+
+        return {"status": "success", "data": response.data}
+    except Exception as e:
+        logger.error(f"Error submitting FRM33: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/frm34/submit")
+async def submit_frm34(
+    data: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Submit FRM34 - marks status as submitted"""
+    try:
+        contractor_id = data.get("contractor_id")
+        answers = data.get("answers", {})
+
+        if not contractor_id:
+            raise HTTPException(status_code=400, detail="contractor_id is required")
+
+        response = supabase.table("frm34_submissions").upsert({
+            "contractor_id": contractor_id,
+            "answers": answers,
+            "status": "submitted",
+            "created_by": current_user["id"],
+            "updated_at": "now()"
+        }, on_conflict="contractor_id").execute()
+
+        return {"status": "success", "data": response.data}
+    except Exception as e:
+        logger.error(f"Error submitting FRM34: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/frm35/submit")
+async def submit_frm35(
+    data: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Submit FRM35 - marks status as submitted"""
+    try:
+        contractor_id = data.get("contractor_id")
+        answers = data.get("answers", {})
+
+        if not contractor_id:
+            raise HTTPException(status_code=400, detail="contractor_id is required")
+
+        response = supabase.table("frm35_submissions").upsert({
+            "contractor_id": contractor_id,
+            "answers": answers,
+            "status": "submitted",
+            "created_by": current_user["id"],
+            "updated_at": "now()"
+        }, on_conflict="contractor_id").execute()
+
+        return {"status": "success", "data": response.data}
+    except Exception as e:
+        logger.error(f"Error submitting FRM35: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/supervisor-forms/batch-submissions")
+async def get_batch_supervisor_submissions(
+    data: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get FRM33/34/35 submissions in batch for multiple contractors"""
+    try:
+        contractor_ids = data.get("contractor_ids", [])
+        if not contractor_ids:
+            return {
+                "frm33": {},
+                "frm34": {},
+                "frm35": {}
+            }
+
+        # Fetch all three forms in parallel
+        frm33_response = supabase.table("frm33_submissions")\
+            .select("*")\
+            .in_("contractor_id", contractor_ids)\
+            .execute()
+
+        frm34_response = supabase.table("frm34_submissions")\
+            .select("*")\
+            .in_("contractor_id", contractor_ids)\
+            .execute()
+
+        frm35_response = supabase.table("frm35_submissions")\
+            .select("*")\
+            .in_("contractor_id", contractor_ids)\
+            .execute()
+
+        # Create a map of contractor_id -> form data
+        result = {
+            "frm33": {item["contractor_id"]: item for item in (frm33_response.data or [])},
+            "frm34": {item["contractor_id"]: item for item in (frm34_response.data or [])},
+            "frm35": {item["contractor_id"]: item for item in (frm35_response.data or [])}
+        }
+
+        return result
+    except Exception as e:
+        logger.error(f"Error getting batch supervisor submissions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
