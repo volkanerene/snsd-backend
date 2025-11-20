@@ -185,90 +185,91 @@ def _build_incident_script_prompt(
     preventive_actions: Optional[str] = None,
     reference_case: Optional[str] = None
 ) -> str:
-    """Build prompt for incident-based script generation with 8-part format
+    """Build prompt for incident-based script generation with conservative, data-respecting approach.
 
-    8-Part Structure:
-    1. Introduction
-    2. What happened?
-    3. Why did it happen?
-    4. Reference case from industry
-    5. What should be done to prevent?
-    6. Process Safety Fundamental violation
-    7. Life Saving Rule violation
-    8. Suggestion and Close Out
+    New approach:
+    - Prevents data invention/hallucination
+    - Conditionally includes sections only if data provided
+    - Produces 350-450 word scripts
+    - Single continuous spoken narrative
+    - Graceful handling of missing data
     """
 
-    similar_incident_text = ""
+    # Build conditional reference case section
+    reference_case_section = ""
     if similar_incident:
-        similar_incident_text = f"""{similar_incident.get('reference_case_title', similar_incident.get('title', 'Reference Case'))}
-{similar_incident.get('reference_case_description', '')}
-Year: {similar_incident.get('reference_case_year', 'Unknown')}"""
+        ref_title = similar_incident.get('reference_case_title', similar_incident.get('title', ''))
+        ref_desc = similar_incident.get('reference_case_description', '')
+        ref_year = similar_incident.get('reference_case_year', '')
+        if ref_title or ref_desc:
+            reference_case_section = f"""Reference incident data:
+Title: {ref_title}
+Description: {ref_desc}
+Year: {ref_year}
 
-    reference_case_final = reference_case or similar_incident_text or "N/A"
+Include this in the script ONLY if you can clearly explain the specific mechanism similarity to the current incident."""
 
-    return f"""You are a safety training speaker. Create a learning-from-incident video script.
-Follow this 8-part structure with SPECIFIC, MEASURABLE details (NOT generic):
+    # Build conditional PSF section
+    psf_section = ""
+    if process_safety_violations and process_safety_violations.strip():
+        psf_section = f"""Process Safety Fundamentals violated: {process_safety_violations}
+If PSF data is provided, briefly state which one and the specific mechanism that violated it."""
 
-1. INTRODUCTION (1-2 sentences) - Engage audience and introduce the specific incident topic
+    # Build conditional LSR section
+    lsr_section = ""
+    if life_saving_rule_violations and life_saving_rule_violations.strip():
+        lsr_section = f"""Life Saving Rules violated: {life_saving_rule_violations}
+If LSR data is provided, briefly state which one and why it was not followed."""
 
-2. WHAT HAPPENED (3-5 sentences) - Describe EXACTLY what occurred with:
-   - Specific equipment names, serial numbers, or component names (from provided data)
-   - Measurable data ONLY from the incident information - DO NOT invent numbers or specifications
-   - Sequence of events in exact chronological order with times/durations
-   - Specific consequences that are documented (injuries, environmental damage, costs - only if provided)
+    # Build conditional preventive actions section
+    actions_section = ""
+    if preventive_actions and preventive_actions.strip():
+        actions_section = f"""Preventive actions documented: {preventive_actions}
+If specific actions are provided, mention them naturally. If not, reference only general prevention principles."""
 
-3. WHY DID IT HAPPEN (2-4 sentences) - Root cause analysis explaining:
-   - The EXACT failure mechanism (not "failure" but "what specifically failed": seal degradation, corrosion, design flaw)
-   - Contributing factors with their specific mechanism (not "maintenance was poor" but "seal was not inspected for <specific degradation>")
-   - The SPECIFIC system or procedure that broke down and how
+    return f"""You are Marcel, a safety expert delivering a 60–90 second learning-from-incident video.
+You speak calmly, clearly, and professionally as if talking to frontline workers and supervisors.
+Your output is a SINGLE continuous spoken script with NO headings, NO lists, NO bullet points, NO numbering.
 
-4. REFERENCE CASE FROM INDUSTRY (3-4 sentences) - MANDATORY FORMAT:
-   - State incident name/platform + year + location (example: "Thistle Field, 1989, North Sea")
-   - MUST explain the SPECIFIC MECHANISM SIMILARITY: "Like [reference incident], this incident also had [EXACT MECHANISM in common]"
-   - Show how the root cause parallels the current incident mechanically
-   - DO NOT use generic phrases like "similar incident" - explain the specific parallel
-   - DO NOT mention current incident by location/name if reference is already clear
+CRITICAL RULES — NEVER BREAK THESE:
+1. DO NOT invent any information that is not explicitly provided.
+2. If "why it happened" is missing or unclear: Say it's "not fully detailed in the available information"
+3. If "preventive actions" are not provided: Give only general prevention principles from the incident facts.
+4. If no similar incident provided: COMPLETELY skip any industry reference case.
+5. If PSF or LSR information is not provided: Do NOT guess or invent them—skip or say they cannot be identified from available data.
+6. EVERYTHING must be traceable to incident data exactly as given.
+7. Speak naturally with no lists, headings, or section labels.
+8. Use the learnings/questions provided if available; if not, derive them carefully from the facts only.
 
-5. WHAT SHOULD BE DONE (3-5 sentences) - Preventive actions with MEASURABLE criteria:
-   - Each action MUST follow: [Specific Action] | [Frequency/Timing] | [Acceptance Criteria] | [Verification Method]
-   - Example: "Seal integrity testing every 90 days with <1 ppm leak rate acceptance, documented with supervisor sign-off"
-   - Include equipment specifications, procedures, or design changes
-   - State measurement units and success criteria explicitly
-   - Include competency or training requirements with frequency
+INTERNAL STRUCTURE (do NOT show as sections in output):
+- Introduction: 1–2 sentences engaging the listener
+- What happened: Chronological facts from provided data only
+- Why it happened: ONLY if provided in detail; otherwise state it's not fully documented
+- Reference case: ONLY if similar incident provided AND you can explain specific mechanism similarity
+- What can be learned: From provided learnings OR derived carefully from facts
+- PSF/LSR statement: ONLY if specific data provided about violations
+- Reflective question: Encourage thoughtful consideration
 
-6. PROCESS SAFETY FUNDAMENTAL VIOLATION (2-3 sentences) - MANDATORY FORMAT:
-   - State: "[Principle Name] was violated BECAUSE [specific mechanism/action not taken] which caused [outcome]"
-   - Example: "We Respect Hazards was violated BECAUSE the noise signal from seal degradation was not escalated as a hazard warning"
-   - Name the exact principle (e.g., "Verify Before You Act", "Know Your Procedures", "We Respect Hazards")
-   - DO NOT just say "was violated" without the BECAUSE and outcome
-
-7. LIFE SAVING RULE VIOLATION (2-3 sentences) - MANDATORY FORMAT:
-   - State: "[Rule Name] was not followed BECAUSE [specific action that should have occurred but didn't] which resulted in [consequence]"
-   - Example: "Control of Work was not followed BECAUSE the post-revision pressure test was not performed before startup"
-   - Name the exact rule and explain what specific action was missing
-   - DO NOT use generic language like "was not properly implemented"
-
-8. SUGGESTION AND CLOSE OUT (2-3 sentences) - Conclude with:
-   - One specific, actionable key takeaway relevant to the organization
-   - One reflective question for the audience to consider
-
-INCIDENT DATA:
+INCIDENT DATA PROVIDED:
 What happened: {what_happened}
-Why it happened: {why_did_it_happen or 'N/A'}
-What we learned: {what_did_they_learn or 'N/A'}
+Why it happened: {why_did_it_happen if why_did_it_happen and why_did_it_happen.strip() else 'NOT PROVIDED'}
+What we learned: {what_did_they_learn if what_did_they_learn and what_did_they_learn.strip() else 'NOT PROVIDED'}
+Ask yourself or crew: {ask_yourself_or_crew if ask_yourself_or_crew and ask_yourself_or_crew.strip() else 'NOT PROVIDED'}
 
-CRITICAL RULES - DO NOT BREAK THESE:
-- Write natural spoken dialogue ONLY (no headings, brackets, scene descriptions, no numbered lists)
-- MAXIMUM: 5000 characters (~1300 words)
-- Sound like one person speaking naturally and conversationally
-- EVERY STATEMENT must use PROVIDED data - DO NOT invent numbers, equipment models, or specifications not in the incident information
-- Use specific names, times, and measurements FROM the incident data provided
-- DO NOT use generic phrases: "was violated", "similar incident", "proper procedures", "failure", "poor", "best practices"
-- DO NOT use vague language: use exact mechanism names, specific equipment names from provided data, measurable criteria
-- Reference case MUST include specific mechanism similarity to current incident
-- PSF and LSR sections MUST follow the format: [Principle/Rule] was [violated/not followed] BECAUSE [specific mechanism] [outcome/consequence]
-    - All preventive actions MUST have measurable acceptance criteria and verification methods
-    - DO NOT exceed 2500 characters"""
+{reference_case_section}
+
+{psf_section}
+
+{lsr_section}
+
+{actions_section}
+
+FINAL CONSTRAINTS:
+- Maximum: 350–450 words (~2200 characters)
+- ABSOLUTELY NO invented data, numbers, equipment names, or mechanisms not explicitly in the provided incident information.
+- If data is missing, state it naturally: "The specific cause isn't fully detailed in what we have," not invent reasons.
+- Speak directly to the audience as if in conversation, not like reading a prepared report.
+- Make it traceable: A reader should be able to point to the provided data and find the source of every claim you make."""
 
 
 def _strip_json_block(raw_text: str) -> str:
@@ -619,18 +620,15 @@ async def generate_script_from_incident(
     reference_case: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Generate a video script from incident details with 8-part format.
+    Generate a video script from incident details with conservative, data-respecting approach.
     Optionally finds similar incidents from database for context.
 
-    8-Part Structure:
-    1. Introduction
-    2. What happened?
-    3. Why did it happen?
-    4. Reference case from industry
-    5. What should be done to prevent?
-    6. Process Safety Fundamental violation
-    7. Life Saving Rule violation
-    8. Suggestion and Close Out
+    Key features:
+    - Prevents hallucination by never inventing data
+    - Handles missing data gracefully (states when not detailed rather than inventing)
+    - Produces 350-450 word single continuous spoken scripts
+    - Conditionally includes sections (PSF, LSR, reference cases) only if data provided
+    - Makes every claim traceable to provided incident data
     """
     try:
         if not settings.OPENAI_API_KEY:
@@ -668,22 +666,22 @@ async def generate_script_from_incident(
             reference_case
         )
 
-        print(f"[Script Gen] Generating incident script with 8-part format...")
+        print(f"[Script Gen] Generating incident script with conservative, data-respecting approach...")
 
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a professional safety training speaker. Create natural, conversational dialogue only - no scene descriptions, no stage directions, no visual cues. Follow the 8-part structure exactly as specified in the prompt."
+                    "content": "You are Marcel, a safety expert. Create natural, conversational dialogue only - no scene descriptions, no stage directions, no visual cues, no headings, no lists. Output a single continuous spoken script for a 60-90 second video. Never invent data—only use information explicitly provided. If data is missing, state it naturally."
                 },
                 {
                     "role": "user",
                     "content": prompt
                 }
             ],
-            temperature=0.7,
-            max_tokens=5000
+            temperature=0.6,
+            max_tokens=1500
         )
 
         script = response.choices[0].message.content.strip()
