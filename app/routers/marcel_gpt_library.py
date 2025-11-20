@@ -11,6 +11,7 @@ import logging
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, BackgroundTasks, Query
 from pydantic import BaseModel
+from postgrest.exceptions import APIError
 
 from app.config import settings
 from app.db.supabase_client import supabase
@@ -21,6 +22,7 @@ from app.services.category_classifier import (
     VIDEO_CATEGORY_GROUPS,
     YOUTUBE_CATEGORY_KEY,
 )
+from app.data.snsd_curated_videos import CURATED_SAFETY_VIDEOS
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -29,6 +31,59 @@ CHANNEL_ID_PATTERN = re.compile(r'["\']channelId["\']\s*:\s*["\'](UC[0-9A-Za-z_\
 BROWSE_ID_PATTERN = re.compile(r'["\']browseId["\']\s*:\s*["\'](UC[0-9A-Za-z_\-]{20,})["\']')
 EXTERNAL_ID_PATTERN = re.compile(r'["\']externalChannelId["\']\s*:\s*["\'](UC[0-9A-Za-z_\-]{20,})["\']')
 _CHANNEL_HANDLE_CACHE: dict[str, str] = {}
+
+
+def _slugify(value: str) -> str:
+    normalized = (value or '').lower().strip()
+    normalized = re.sub(r'[^a-z0-9]+', '-', normalized)
+    return normalized.strip('-')
+
+
+def _parse_duration_to_seconds(value: Optional[str]) -> Optional[int]:
+    if not value:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    parts = text.split(':')
+    try:
+        parts_int = [int(part) for part in parts]
+    except ValueError:
+        return None
+
+    if len(parts_int) == 3:
+        hours, minutes, seconds = parts_int
+    elif len(parts_int) == 2:
+        hours = 0
+        minutes, seconds = parts_int
+    else:
+        hours = 0
+        minutes = 0
+        seconds = parts_int[0]
+
+    return hours * 3600 + minutes * 60 + seconds
+
+
+def _extract_youtube_id(url: str) -> Optional[str]:
+    if not url:
+        return None
+    patterns = [
+        r"youtu\.be/([^?&/]+)",
+        r"youtube\.com/watch\?v=([^&]+)",
+        r"youtube\.com/embed/([^?&/]+)"
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    return None
+
+
+def _thumbnail_from_youtube(url: str) -> Optional[str]:
+    video_id = _extract_youtube_id(url)
+    if not video_id:
+        return None
+    return f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
 
 
 class AssignmentDocumentInput(BaseModel):
@@ -55,6 +110,13 @@ class ImportPremadeVideoRequest(BaseModel):
     category: Optional[str] = "External"
     tags: Optional[List[str]] = None
     training_questions: Optional[List[Dict[str, Any]]] = None
+    source: Optional[str] = "external"
+    metadata: Optional[Dict[str, Any]] = None
+    category_metadata: Optional[Dict[str, Any]] = None
+
+
+class BulkImportVideoEntry(ImportPremadeVideoRequest):
+    pass
 
 
 class YoutubeVideo(BaseModel):
@@ -69,6 +131,202 @@ class YoutubeVideo(BaseModel):
     category_metadata: Optional[Dict[str, Any]] = None
 
 
+async def _classify_video_text(text: str) -> Optional[Dict[str, Any]]:
+    snippet = (text or "").strip()
+    if not snippet:
+        return None
+    classification = await classify_script_categories(snippet, use_openai=False)
+    if not classification:
+        return None
+    return classification
+
+
+async def _upsert_premade_video(
+    tenant_id: str,
+    created_by: Optional[str],
+    payload: ImportPremadeVideoRequest
+) -> Dict[str, Any]:
+    data = payload.dict()
+    video_url = (data.get("video_url") or "").strip()
+    metadata = data.get("metadata") or {}
+    slug = metadata.get("slug") or _slugify(data.get("title", ""))
+
+    existing = (
+        supabase.table("marcel_gpt_premade_videos")
+        .select("id")
+        .eq("tenant_id", tenant_id)
+        .eq("video_url", video_url)
+        .limit(1)
+        .execute()
+    )
+    if not existing.data and slug:
+        existing = (
+            supabase.table("marcel_gpt_premade_videos")
+            .select("id")
+            .eq("tenant_id", tenant_id)
+            .contains("metadata", {"slug": slug})
+            .limit(1)
+            .execute()
+        )
+
+    combined_text = "\n\n".join(
+        part
+        for part in [
+            data.get("title"),
+            data.get("description"),
+            metadata.get("author"),
+            metadata.get("notes"),
+        ]
+        if part
+    )
+    classification = data.get("category_metadata") or await _classify_video_text(combined_text)
+
+    tag_labels: List[str] = data.get("tags") or []
+    if classification:
+        tag_labels = tag_labels or classification.get("tag_labels") or []
+
+    record = {
+        "title": data.get("title"),
+        "description": data.get("description"),
+        "video_url": video_url,
+        "thumbnail_url": data.get("thumbnail_url"),
+        "duration_seconds": data.get("duration_seconds"),
+        "category": data.get("category") or classification.get("main_category_label") if classification else data.get("category"),
+        "tags": tag_labels,
+        "training_questions": data.get("training_questions") or [],
+        "updated_at": datetime.utcnow().isoformat(),
+        "source": data.get("source") or "external",
+    }
+
+    if classification:
+        record["main_category"] = classification.get("main_category")
+        record["category_tags"] = classification.get("tags")
+        record["category_metadata"] = classification
+
+    if slug:
+        metadata.setdefault("slug", slug)
+    if metadata:
+        record["metadata"] = metadata
+
+    if existing.data:
+        video_id = existing.data[0]["id"]
+        res = (
+            supabase.table("marcel_gpt_premade_videos")
+            .update(record)
+            .eq("id", video_id)
+            .eq("tenant_id", tenant_id)
+            .execute()
+        )
+        updated = ensure_response(res)
+        return updated[0] if isinstance(updated, list) and updated else updated
+
+    insert_payload = {
+        **record,
+        "tenant_id": tenant_id,
+        "created_by": created_by
+    }
+    res = supabase.table("marcel_gpt_premade_videos").insert(insert_payload).execute()
+    created = ensure_response(res)
+    return created[0] if isinstance(created, list) and created else created
+
+
+MISSING_METADATA_ERROR_CODES = {"42703", "PGRST204"}
+
+
+async def _ensure_curated_playlist_videos(
+    tenant_id: str,
+    created_by: Optional[str]
+):
+    try:
+        for entry in CURATED_SAFETY_VIDEOS:
+            slug = entry.get("slug") or _slugify(entry.get("title", ""))
+            if not slug:
+                continue
+
+            existing = (
+                supabase.table("marcel_gpt_premade_videos")
+                .select("id")
+                .eq("tenant_id", tenant_id)
+                .contains("metadata", {"slug": slug})
+                .limit(1)
+                .execute()
+            )
+            if existing.data:
+                continue
+
+            thumbnail = entry.get("thumbnail_url") or _thumbnail_from_youtube(entry.get("video_url", ""))
+            duration_seconds = _parse_duration_to_seconds(entry.get("duration"))
+            metadata = {
+                "slug": slug,
+                "author": entry.get("author"),
+                "playlist": "snsd_curated_psf"
+            }
+
+            request = ImportPremadeVideoRequest(
+                title=entry.get("title", "SnSD Training"),
+                video_url=entry.get("video_url", ""),
+                description=entry.get("description"),
+                thumbnail_url=thumbnail,
+                duration_seconds=duration_seconds,
+                category="Process Safety",
+                source="snsd_playlist",
+                metadata=metadata
+            )
+            await _upsert_premade_video(tenant_id, created_by, request)
+    except APIError as exc:
+        if exc.code in MISSING_METADATA_ERROR_CODES:
+            logger.warning(
+                "[MarcelGPT] Skipping curated playlist import; premade metadata columns missing (%s)",
+                exc.message if hasattr(exc, "message") else str(exc)
+            )
+            return
+        raise
+
+
+async def _backfill_premade_metadata(
+    tenant_id: str,
+    videos: List[Dict[str, Any]]
+):
+    try:
+        for video in videos:
+            if video.get("category_metadata") and video.get("main_category"):
+                continue
+
+            combined_text = "\n\n".join(
+                part
+                for part in [
+                    video.get("title"),
+                    video.get("description"),
+                    (video.get("metadata") or {}).get("author"),
+                ]
+                if part
+            )
+            classification = await _classify_video_text(combined_text)
+            if not classification:
+                continue
+
+            update_payload = {
+                "main_category": classification.get("main_category"),
+                "category_tags": classification.get("tags"),
+                "category_metadata": classification,
+            }
+            video.update(update_payload)
+
+            supabase.table("marcel_gpt_premade_videos") \
+                .update(update_payload) \
+                .eq("id", video["id"]) \
+                .eq("tenant_id", tenant_id) \
+                .execute()
+    except APIError as exc:
+        if exc.code in MISSING_METADATA_ERROR_CODES:
+            logger.warning(
+                "[MarcelGPT] Skipping metadata backfill; metadata columns missing (%s)",
+                exc.message if hasattr(exc, "message") else str(exc)
+            )
+            return
+        raise
+
+
 # =========================================================================
 # Premade Videos Endpoints
 # =========================================================================
@@ -77,7 +335,8 @@ class YoutubeVideo(BaseModel):
 async def list_premade_videos(
     user=Depends(get_current_user),
     category: Optional[str] = None,
-    is_active: bool = True
+    is_active: bool = True,
+    source: Optional[str] = None
 ):
     """List all premade training videos for the tenant (Library Admins only)"""
     require_library_admin(user)
@@ -87,6 +346,16 @@ async def list_premade_videos(
     if not tenant_id:
         raise HTTPException(400, "User not assigned to a tenant")
 
+    try:
+        await _ensure_curated_playlist_videos(tenant_id, user.get("id"))
+    except APIError as exc:
+        if exc.code not in MISSING_METADATA_ERROR_CODES:
+            raise
+        logger.warning(
+            "[MarcelGPT] Curated playlist sync skipped due to missing metadata columns (%s)",
+            exc.message if hasattr(exc, "message") else str(exc)
+        )
+
     query = supabase.table("marcel_gpt_premade_videos") \
         .select("*") \
         .eq("tenant_id", tenant_id) \
@@ -94,13 +363,25 @@ async def list_premade_videos(
 
     if category:
         query = query.eq("category", category)
+    if source:
+        query = query.eq("source", source)
 
     query = query.order("created_at", desc=True)
 
     res = query.execute()
+    videos = ensure_response(res) or []
+    try:
+        await _backfill_premade_metadata(tenant_id, videos)
+    except APIError as exc:
+        if exc.code not in MISSING_METADATA_ERROR_CODES:
+            raise
+        logger.warning(
+            "[MarcelGPT] Metadata backfill skipped due to missing metadata columns (%s)",
+            exc.message if hasattr(exc, "message") else str(exc)
+        )
     return {
-        "videos": ensure_response(res),
-        "count": len(res.data) if res.data else 0
+        "videos": videos,
+        "count": len(videos)
     }
 
 
@@ -145,50 +426,32 @@ async def import_premade_video(
     if not tenant_id:
         raise HTTPException(400, "User not assigned to a tenant")
 
-    existing = (
-        supabase.table("marcel_gpt_premade_videos")
-        .select("id")
-        .eq("tenant_id", tenant_id)
-        .eq("video_url", payload.video_url)
-        .limit(1)
-        .execute()
-    )
-
-    video_row = None
-    now_payload = {
-        "title": payload.title,
-        "description": payload.description,
-        "video_url": payload.video_url,
-        "thumbnail_url": payload.thumbnail_url,
-        "duration_seconds": payload.duration_seconds,
-        "category": payload.category or "External",
-        "tags": payload.tags,
-        "training_questions": payload.training_questions or [],
-        "updated_at": datetime.utcnow().isoformat()
-    }
-
-    if existing.data:
-        video_id = existing.data[0]["id"]
-        res = (
-            supabase.table("marcel_gpt_premade_videos")
-            .update(now_payload)
-            .eq("id", video_id)
-            .eq("tenant_id", tenant_id)
-            .execute()
-        )
-        data = ensure_response(res)
-        video_row = data[0] if isinstance(data, list) and data else data
-    else:
-        insert_payload = {
-            **now_payload,
-            "tenant_id": tenant_id,
-            "created_by": created_by
-        }
-        res = supabase.table("marcel_gpt_premade_videos").insert(insert_payload).execute()
-        data = ensure_response(res)
-        video_row = data[0] if isinstance(data, list) and data else data
-
+    video_row = await _upsert_premade_video(tenant_id, created_by, payload)
     return {"video": video_row}
+
+
+@router.post("/premade-videos/bulk-import")
+async def bulk_import_premade_videos(
+    payload: List[BulkImportVideoEntry],
+    user=Depends(get_current_user)
+):
+    """Bulk import external videos into the premade library."""
+    require_library_admin(user)
+    require_permission(user, "marcel_gpt.view_library")
+
+    tenant_id = user.get("tenant_id")
+    created_by = user.get("id")
+
+    if not tenant_id:
+        raise HTTPException(400, "User not assigned to a tenant")
+
+    imported: List[Dict[str, Any]] = []
+    for entry in payload:
+        request = ImportPremadeVideoRequest(**entry.dict())
+        video_row = await _upsert_premade_video(tenant_id, created_by, request)
+        imported.append(video_row)
+
+    return {"videos": imported, "count": len(imported)}
 
 async def _resolve_channel_id_from_handle(handle: str) -> Optional[str]:
     """

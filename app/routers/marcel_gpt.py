@@ -2036,6 +2036,70 @@ async def update_job_training_questions(
     return {"success": True, "training_questions": sanitized_questions}
 
 
+@router.delete("/jobs/{job_id}")
+async def delete_video_job(
+    job_id: int,
+    user=Depends(get_current_user)
+):
+    """Delete a generated video job and remove it from HeyGen if possible."""
+    require_permission(user, "modules.access_marcel_gpt")
+
+    tenant_id = user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(400, "User not assigned to a tenant")
+
+    job_res = (
+        supabase.table("video_jobs")
+        .select("*, video_artifacts(*)")
+        .eq("id", job_id)
+        .eq("tenant_id", tenant_id)
+        .limit(1)
+        .execute()
+    )
+    job_rows = ensure_response(job_res)
+    if not job_rows:
+        raise HTTPException(404, "Video job not found")
+
+    job = job_rows[0]
+    heygen_job_id = job.get("heygen_job_id")
+    heygen_deleted: Optional[bool] = None
+    heygen_error: Optional[str] = None
+
+    if heygen_job_id:
+        heygen_service = get_heygen_service(tenant_id) or get_fallback_heygen_service()
+        if heygen_service:
+            try:
+                await heygen_service.delete_video(heygen_job_id)
+                heygen_deleted = True
+            except Exception as exc:
+                heygen_deleted = False
+                heygen_error = str(exc)
+
+    cleanup_tables = [
+        ("video_compositions", "job_id"),
+        ("video_artifacts", "job_id"),
+        ("video_quiz_answers", "video_id"),
+    ]
+    for table, column in cleanup_tables:
+        try:
+            supabase.table(table).delete().eq(column, job_id).execute()
+        except Exception as cleanup_error:
+            logger.warning("[MarcelGPT] Failed cleanup on %s for job %s: %s", table, job_id, cleanup_error)
+
+    supabase.table("video_jobs") \
+        .delete() \
+        .eq("id", job_id) \
+        .eq("tenant_id", tenant_id) \
+        .execute()
+
+    return {
+        "success": True,
+        "job_id": job_id,
+        "heygen_deleted": heygen_deleted,
+        "heygen_error": heygen_error
+    }
+
+
 @router.get("/heygen/videos")
 async def list_raw_heygen_videos(
     user=Depends(get_current_user),

@@ -94,7 +94,8 @@ async def create_user(
 
         user_id = auth_res.user.id
 
-        # Create profile
+        # Create or update profile (Supabase may auto-create an empty shell,
+        # so using upsert avoids duplicate key errors on id)
         profile_data = {
             "id": user_id,
             "email": email,
@@ -108,7 +109,11 @@ async def create_user(
         if payload.get("phone"):
             profile_data["phone"] = payload["phone"]
 
-        profile_res = supabase.table("profiles").insert(profile_data).execute()
+        profile_res = (
+            supabase.table("profiles")
+            .upsert(profile_data, on_conflict="id")
+            .execute()
+        )
 
         # If tenant_id provided, create tenant_users entry
         if tenant_id:
@@ -190,24 +195,45 @@ async def delete_user(
     user=Depends(get_current_user),
 ):
     """
-    Deactivate a user (soft delete)
-    Sets status to 'inactive' instead of actual deletion
+    Permanently delete a user and all their data
+    - Removes from Supabase Auth
+    - Deletes profile record
+    - Deletes tenant_users associations
     """
     require_admin(user)
 
-    # Soft delete - set status to inactive
-    res = (
-        supabase.table("profiles")
-        .update({"status": "inactive"})
-        .eq("id", user_id)
-        .execute()
-    )
+    try:
+        # Delete from Supabase Auth first
+        try:
+            supabase.auth.admin.delete_user(user_id)
+        except Exception as auth_error:
+            print(f"[Delete User] Auth deletion error: {auth_error}")
+            # Continue with DB deletion even if auth fails
 
-    data = ensure_response(res)
-    if not data:
-        raise HTTPException(404, "User not found")
+        # Delete tenant_users associations
+        try:
+            supabase.table("tenant_users").delete().eq("user_id", user_id).execute()
+        except Exception as tenant_error:
+            print(f"[Delete User] Tenant association deletion error: {tenant_error}")
 
-    return {"message": "User deactivated successfully", "user_id": user_id}
+        # Delete profile record
+        res = (
+            supabase.table("profiles")
+            .delete()
+            .eq("id", user_id)
+            .execute()
+        )
+
+        # Check if deletion was successful
+        if res.count == 0:
+            raise HTTPException(404, "User not found")
+
+        return {"message": "User permanently deleted", "user_id": user_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Failed to delete user: {str(e)}")
 
 
 @router.post("/{user_id}/activate")

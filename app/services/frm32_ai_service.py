@@ -68,6 +68,7 @@ Return a JSON array with this exact format:
 
 Important:
 - Only return valid scores: 0, 3, 6, or 10
+- Evaluate each metric independently; do not assign the same score to every metric unless the evidence is genuinely identical.
 - Reasoning should be 1-2 sentences explaining the evidence quality
 - Be objective and evidence-based
 - Return ONLY the JSON array, no other text

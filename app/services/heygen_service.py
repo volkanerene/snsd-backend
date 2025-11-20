@@ -590,6 +590,14 @@ class HeyGenService:
         response = await self._make_request("GET", "/v1/video.list", params=params)
         return response
 
+    async def delete_video(self, video_id: str) -> Dict:
+        """
+        Delete a generated video from HeyGen
+        """
+        payload = {"video_id": video_id}
+        response = await self._make_request("POST", "/v1/video.delete", data=payload)
+        return response
+
     # =========================================================================
     # Asset Upload Methods
     # =========================================================================

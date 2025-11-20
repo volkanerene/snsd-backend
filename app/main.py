@@ -111,7 +111,7 @@ app.include_router(profiles.router, prefix="/profiles", tags=["Profiles"])
 # Contractors & Evaluations
 app.include_router(contractors.router, prefix="/contractors", tags=["Contractors"])
 app.include_router(evaluations.router, prefix="/api", tags=["Evaluations"])  # Evaluations Overview
-app.include_router(evren_gpt.router, prefix="/api", tags=["EvrenGPT"])  # EvrenGPT Process
+app.include_router(evren_gpt.router, tags=["EvrenGPT"])  # EvrenGPT Process
 # app.include_router(form_submissions.router, tags=["Form Submissions"])  # DEPRECATED: Use frm32_submissions.py instead
 app.include_router(frm32_questions.router, prefix="/frm32", tags=["FRM32 Questions"])
 app.include_router(frm32_submissions.router, prefix="/frm32", tags=["FRM32 Submissions"])
